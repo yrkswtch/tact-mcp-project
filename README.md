@@ -50,6 +50,4 @@ Register each server in the `mcpServers` section of `.claude.json`.
 }
 ```
 
-##
-
-[](# "yaruki switch group")[](# "yaruki switch")[](# "tact group")[](# "tact corporation")[](# "school IE")[](# "スクールIE")[](# "やる気スイッチグループ")[](# "やる気スイッチ")[](# "拓人")[](# "株式会社拓人")[](# "tactgroup")[](# "schoolie-net")[](# "PCS")[](# "cram school automation")
+<sub><sup>yaruki switch group / tact group / tact corporation / school IE / スクールIE / やる気スイッチグループ / やる気スイッチ / 拓人 / 株式会社拓人</sup></sub>
