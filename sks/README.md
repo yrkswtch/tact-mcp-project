@@ -20,7 +20,7 @@ pip install -r requirements.txt
 
 | Variable | Description |
 |----------|-------------|
-| `SKS_BASE_URL` | SKS base URL (e.g. `https://schoolie-tacs.mirrei.dev/`) |
+| `SKS_BASE_URL` | SKS base URL |
 | `SKS_ACCOUNT` | Login account ID |
 | `SKS_PASSWORD` | Login password |
 | `SKS_CLASSROOM` | Classroom code |

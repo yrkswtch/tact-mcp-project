@@ -2,7 +2,7 @@
 MCP Server for SKS (WEB-SKS 生徒管理システム)
 スクールIE SKSの操作をMCPツールとして提供する
 
-接続: SKS-proxy (https://schoolie-tacs.mirrei.dev/) または直接 (http://tacs.tacsvpn/)
+接続: 環境変数 SKS_BASE_URL で指定
 環境変数 SKS_BASE_URL でベースURLを切り替え
 
 【重要】ログイン試行に繰り返し失敗するとアカウントロックされる可能性。
@@ -32,7 +32,7 @@ except ImportError:
 mcp = FastMCP("SKS")
 
 # --- Configuration ---
-BASE_URL = os.environ.get("SKS_BASE_URL", "https://schoolie-tacs.mirrei.dev")
+BASE_URL = os.environ.get("SKS_BASE_URL", "")
 ACCOUNT = os.environ.get("SKS_ACCOUNT", "")
 PASSWORD = os.environ.get("SKS_PASSWORD", "")
 CLASSROOM = os.environ.get("SKS_CLASSROOM", "5558")
@@ -580,7 +580,7 @@ def sks_inquiry_register(
 # PCS Tools
 # =====================
 
-SSK2_URL = "https://schoolie-tacs-ssk2.mirrei.dev"
+SSK2_URL = os.environ.get("SKS_SSK2_URL", "")
 _pcs_session_ready: bool = False
 
 
