@@ -5,14 +5,14 @@
 ```
 [外部PC] → https://{SKS_BASE_URL}/ (SKS-proxy)
     → [hatogaya PC] → L2-connect-remote-access (VPNプロキシ)
-        → http://tacs.tacsvpn/ (SKSサーバー)
+        → {SKS_BASE_URL}/ (SKSサーバー)
 ```
 
 - SKS-proxy: `https://{SKS_BASE_URL}/`
-- 直接接続: `http://tacs.tacsvpn/`（L2-connect-remote-access導入済みPCのみ）
+- 直接接続: `{SKS_BASE_URL}/`（L2-connect-remote-access導入済みPCのみ）
 - **MCP設計**: 環境変数 `SKS_BASE_URL` でベースURLを切り替え
   - プロキシ: `SKS_BASE_URL=https://{SKS_BASE_URL}`
-  - 直接: `SKS_BASE_URL=http://tacs.tacsvpn`
+  - 直接: `SKS_BASE_URL={SKS_BASE_URL}`
   - パス（`/sks.wpp`, `/service/`, `/service/IEB030.wpp`等）は共通
 - Copyright 2005-2007 Tact Corporation
 

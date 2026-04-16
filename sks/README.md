@@ -20,7 +20,8 @@ pip install -r requirements.txt
 
 | Variable | Description |
 |----------|-------------|
-| `SKS_BASE_URL` | SKS base URL |
+| `SKS_BASE_URL` | SKS base URL (default: `http://tacs.tacsvpn`) |
+| `SKS_SSK2_URL` | PCS/夢SEED server URL (default: `http://ssk2.tacsvpn`) |
 | `SKS_ACCOUNT` | Login account ID |
 | `SKS_PASSWORD` | Login password |
 | `SKS_CLASSROOM` | Classroom code |
