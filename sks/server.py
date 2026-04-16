@@ -584,12 +584,23 @@ SSK2_URL = "https://schoolie-tacs-ssk2.mirrei.dev"
 _pcs_session_ready: bool = False
 
 
+_KYOUZAIKB_MAP = {"2": "0", "3": "B"}  # 数学=0, 英語=B
+
+_COLOR_NAME_TO_CLASS = {
+    "黄": "clYellow", "紺": "clNavy", "白": "", "青": "clBlue",
+    "灰": "clGray", "赤": "clRed", "薄紺": "clLNavy", "緑": "clGreen",
+}
+
+
 def _pcs_establish_session(s: requests.Session, student_code: str, kyoukakb: str = "2"):
     """PCS系統図（別ドメインssk2）のセッションを確立する。
 
     pcs_start.wpp → Pcs.do の2段階POSTが必要。
+    戻り値: PcsMenu.doのレスポンス(requests.Response)
     """
     global _pcs_session_ready
+
+    kyouzaikb = _KYOUZAIKB_MAP.get(kyoukakb, "0")
 
     # pcs.wppにアクセスして生徒情報をセット
     s.get(f"{BASE_URL}/service/pcs.wpp")
@@ -599,7 +610,7 @@ def _pcs_establish_session(s: requests.Session, student_code: str, kyoukakb: str
     r1 = s.post(f"{BASE_URL}/service/pcs_start.wpp", data={
         "scd": student_code,
         "kyoukakb": kyoukakb,
-        "kyouzaikb": "0",
+        "kyouzaikb": kyouzaikb,
         "pflag": "1",
         "omtflag": "1",
     })
@@ -623,6 +634,7 @@ def _pcs_establish_session(s: requests.Session, student_code: str, kyoukakb: str
         raise Exception(f"PCS session: failed to reach PcsMenu.do (url={r2.url})")
 
     _pcs_session_ready = True
+    return r2
 
 
 @mcp.tool()
@@ -741,6 +753,152 @@ def pcs_print_pdf(pdf_path: str, paper: str = "A3", nup: str = "") -> str:
         "printer": printer,
         "settings": settings,
         "pdf": pdf_path,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def pcs_create_problem(
+    student_code: str,
+    selected_units: str,
+    kyoukakb: str = "2",
+    auto_complete_cycle: bool = True,
+) -> str:
+    """PCSの問題作成を行う。指定した単元で問題を作成する。
+
+    Args:
+        student_code: 生徒番号（例: "250015"）
+        selected_units: 選択する単元コードのカンマ区切り（例: "1701_01,1701_02,1801_01"）
+        kyoukakb: 教科コード（2=算数・数学, 3=英語）
+        auto_complete_cycle: Trueなら前回サイクル未完了時に自動的に採点(0点)→カリキュラム(4回)→更新してから問題作成する
+    """
+    s = _get_session()
+    kyouzaikb = _KYOUZAIKB_MAP.get(kyoukakb, "0")
+    picks = set(u.strip() for u in selected_units.split(",") if u.strip())
+
+    if not picks:
+        return json.dumps({"result": "FAILED", "error": "No units selected"})
+
+    # PCSセッション確立
+    r2 = _pcs_establish_session(s, student_code, kyoukakb)
+    html = r2.text
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 前回サイクル未完了判定
+    # delm(問題削除)にdisabled属性がなければ問題作成済み → サイクル未完了
+    delm = soup.find("input", {"name": "delm"})
+    has_problem = delm and not delm.has_attr("disabled") if delm else False
+
+    if auto_complete_cycle and has_problem:
+        # 採点(0点)
+        r_s = s.get(f"{SSK2_URL}/pcs/PcsSaiten.do")
+        soup_s = BeautifulSoup(r_s.text, "html.parser")
+        saiten_data = {}
+        for inp in soup_s.find_all("input"):
+            n, t = inp.get("name", ""), inp.get("type", "")
+            if not n or t in ("checkbox", "button"):
+                continue
+            saiten_data[n] = inp.get("value", "")
+        if any("correctcnt" in k for k in saiten_data):
+            for k in list(saiten_data.keys()):
+                if "correctcnt" in k:
+                    saiten_data[k] = "0"
+            saiten_data["cmd"] = "regist"
+            s.post(f"{SSK2_URL}/pcs/PcsSaiten.do", data=saiten_data)
+
+        # カリキュラム(tukikaisu=4)
+        r_c = s.get(f"{SSK2_URL}/pcs/PcsCurriculum.do")
+        soup_c = BeautifulSoup(r_c.text, "html.parser")
+        cur_data = {}
+        for inp in soup_c.find_all("input"):
+            n, t = inp.get("name", ""), inp.get("type", "")
+            if not n or t == "button":
+                continue
+            if t == "radio" and inp.get("checked") is None:
+                continue
+            cur_data[n] = inp.get("value", "")
+        cur_data["cmd"] = "regist"
+        cur_data["tukikaisu"] = "4"
+        s.post(f"{SSK2_URL}/pcs/PcsCurriculum.do", data=cur_data)
+
+        # 更新(reload)
+        r_reload = s.get(f"{SSK2_URL}/pcs/PcsMenu.do", params={
+            "mode": "", "kaisu": "", "seitoCd": student_code,
+            "kyoukakb": kyoukakb, "kyouzaikb": kyouzaikb,
+        })
+        html = r_reload.text
+        soup = BeautifulSoup(html, "html.parser")
+
+    # JS初期化から色情報を抽出
+    color_map = {}
+    for m in re.finditer(
+        r'doCheckbox\("(\d+)",\s*"([^"]+)",\s*"color\|([^"]+)"\)', html
+    ):
+        _, key, color = m.groups()
+        color_map[key] = _COLOR_NAME_TO_CLASS.get(color, "")
+
+    # testflg自動判定
+    testflg = "1" if "shubetsu[1].checked = true" in html else "0"
+
+    # form1フィールド取得
+    form1 = soup.find("form", {"name": "form1"})
+    if not form1:
+        return json.dumps({"result": "FAILED", "error": "form1 not found"})
+    f1 = {
+        inp.get("name", ""): inp.get("value", "")
+        for inp in form1.find_all("input")
+        if inp.get("name")
+    }
+    fm = {
+        inp.get("name", ""): inp.get("value", "")
+        for inp in soup.find("form", {"name": "formmain"}).find_all("input")
+        if inp.get("name")
+    }
+
+    # 全単元リスト
+    all_tg = []
+    for inp in soup.find_all("input", {"type": "checkbox"}):
+        n = inp.get("name", "")
+        if n.startswith("tg"):
+            k = n[2:]
+            if k not in all_tg:
+                all_tg.append(k)
+
+    # checks構築: CRLF, 色情報保持, 選択単元はclYellow
+    lines = []
+    for k in all_tg:
+        if k in picks:
+            lines.append(f"{k}|1|clYellow||")
+        else:
+            cname = color_map.get(k, "")
+            lines.append(f"{k}|0|{cname}||")
+    checks = "\r\n".join(lines) + "\r\n"
+
+    # POST
+    f1["mode"] = "updm"
+    f1["checks"] = checks
+    f1["jisshikaisu"] = fm.get("kaisu", "1")
+    f1["pattern"] = fm.get("pattern", "1")
+    f1["testflg"] = testflg
+
+    r3 = s.post(f"{SSK2_URL}/pcs/PcsMenu.do", data=f1, allow_redirects=True)
+    soup3 = BeautifulSoup(r3.text, "html.parser")
+    fm3 = {
+        inp.get("name", ""): inp.get("value", "")
+        for inp in soup3.find_all("input")
+        if inp.get("name")
+    }
+
+    smsg = fm3.get("SMSG", "")
+    success = "問題が印刷" in smsg
+
+    return json.dumps({
+        "result": "OK" if success else "FAILED",
+        "student_code": student_code,
+        "kyoukakb": kyoukakb,
+        "kaisu": fm3.get("kaisu", ""),
+        "selected_units": len(picks),
+        "testflg": testflg,
+        "message": smsg.strip(),
     }, ensure_ascii=False, indent=2)
 
 
