@@ -4,8 +4,6 @@ MCP (Model Context Protocol) servers for automating cram school classroom operat
 
 Built for Claude Code. Handles student management, inquiry tracking, and website content updates.
 
-<sub><sup><span style="color:#f6f8fa;color:var(--bgColor-default,#f6f8fa)">yaruki switch group / yaruki switch / tact group / tact corporation / school IE / スクールIE / やる気スイッチグループ / やる気スイッチ / 拓人 / 株式会社拓人 / tactgroup / schoolie-net / PCS / mcp-server / cram school automation</span></sup></sub>
-
 ## Projects
 
 | Directory | Description |
@@ -51,3 +49,7 @@ Register each server in the `mcpServers` section of `.claude.json`.
   }
 }
 ```
+
+##
+
+[](# "yaruki switch group")[](# "yaruki switch")[](# "tact group")[](# "tact corporation")[](# "school IE")[](# "スクールIE")[](# "やる気スイッチグループ")[](# "やる気スイッチ")[](# "拓人")[](# "株式会社拓人")[](# "tactgroup")[](# "schoolie-net")[](# "PCS")[](# "cram school automation")
