@@ -3,15 +3,15 @@
 ## 接続構造
 
 ```
-[外部PC] → https://{SKS_PROXY_HOST}/ (SKS-proxy)
+[外部PC] → https://{SKS_BASE_URL}/ (SKS-proxy)
     → [{user} PC] → L2-connect-remote-access (VPNプロキシ)
         → http://tacs.tacsvpn/ (SKSサーバー)
 ```
 
-- SKS-proxy: `https://{SKS_PROXY_HOST}/`
+- SKS-proxy: `https://{SKS_BASE_URL}/`
 - 直接接続: `http://tacs.tacsvpn/`（L2-connect-remote-access導入済みPCのみ）
 - **MCP設計**: 環境変数 `SKS_BASE_URL` でベースURLを切り替え
-  - プロキシ: `SKS_BASE_URL=https://{SKS_PROXY_HOST}`
+  - プロキシ: `SKS_BASE_URL=https://{SKS_BASE_URL}`
   - 直接: `SKS_BASE_URL=http://tacs.tacsvpn`
   - パス（`/sks.wpp`, `/service/`, `/service/IEB030.wpp`等）は共通
 - Copyright 2005-2007 Tact Corporation
@@ -521,7 +521,7 @@ IEB010.wppの「授業登録」ボタンから**モーダルiframe**で開く（
 
 ### 概要
 PCS（パーソナルカリキュラムシステム）はテスト作成・採点・カリキュラム管理システム。
-系統図画面は別ドメイン `{SKS_SSK2_HOST}.{PROXY_DOMAIN}` で動くJava Servlet（.do）。
+系統図画面は別ドメイン `{SKS_SSK2_URL}` で動くJava Servlet（.do）。
 
 ### 画面遷移
 ```
@@ -552,7 +552,7 @@ PCS（パーソナルカリキュラムシステム）はテスト作成・採�
 - pcs_start.wpp → ssk2の`Pcs.do`へ2段階POSTで系統図に遷移
 
 ### 系統図 (`PcsMenu.do`) — 別ドメイン ssk2
-- URL: `https://{SKS_SSK2_HOST}.{PROXY_DOMAIN}/pcs/PcsMenu.do`
+- URL: `https://{SKS_SSK2_URL}/pcs/PcsMenu.do`
 - 同タブ遷移（pcs.wppから直接）
 
 #### JS変数
@@ -659,7 +659,7 @@ PCS（パーソナルカリキュラムシステム）はテスト作成・採�
 
 ### 夢SEED発注 (`Omt.do`) — ポップアップ/新規タブ（2026-04-17分析）
 
-- URL: `https://{SKS_SSK2_HOST}.{PROXY_DOMAIN}/pcs/Omt.do?flag=0&ktzFlag={0|1}`
+- URL: `https://{SKS_SSK2_URL}/pcs/Omt.do?flag=0&ktzFlag={0|1}`
   - `ktzFlag=0`: テーブル形式の問題数入力画面（`omt(0)`）
   - `ktzFlag=1`: ビジュアル系統図で単元選択する画面（`omt(1)`）
   - ktzFlag=1の「問題数入力画面」ボタンでktzFlag=0に遷移可能
@@ -796,7 +796,7 @@ PCS（パーソナルカリキュラムシステム）はテスト作成・採�
 - **window.open上書きが必要**（ページ遷移でリセットされるため毎回設定）
 
 ### 採点登録 (`PcsSaiten.do`) — ポップアップ/新規タブ
-- URL: `https://{SKS_SSK2_HOST}.{PROXY_DOMAIN}/pcs/PcsSaiten.do`
+- URL: `https://{SKS_SSK2_URL}/pcs/PcsSaiten.do`
 - フォームフィールド:
   - `correctcnt({問題コード})` — 正解数入力（例: `correctcnt(1002-0201-0009)`）
   - ID: `POINT_{番号}` （例: `POINT_1` 〜 `POINT_16`）
@@ -806,7 +806,7 @@ PCS（パーソナルカリキュラムシステム）はテスト作成・採�
 - 終了: `doClose()` — ウィンドウを閉じる（新規タブなら普通にタブを閉じればOK）
 
 ### カリキュラム登録 (`PcsCurriculum.do`) — ポップアップ/新規タブ
-- URL: `https://{SKS_SSK2_HOST}.{PROXY_DOMAIN}/pcs/PcsCurriculum.do`
+- URL: `https://{SKS_SSK2_URL}/pcs/PcsCurriculum.do`
 - **window.open上書きは⑥カリキュラム作成ボタンの直前にのみかける**（予定登録等の他のボタンでは上書き不要。上書きしたままだと予定登録等がフォームsubmitで白画面になる）
 
 #### ヘッダー情報
@@ -871,7 +871,7 @@ PCS（パーソナルカリキュラムシステム）はテスト作成・採�
 ### PCSセッション確立手順（Python/MCP用）
 GUIなしでPCS系統図（別ドメイン ssk2）にアクセスするには2段階のフォームPOSTが必要:
 1. `POST /service/pcs_start.wpp` data: `scd={生徒番号}&kyoukakb={教科}&kyouzaikb=0&pflag=1&omtflag=1`
-2. レスポンスHTML内の `fmpost2` フォーム（action=`https://{SKS_SSK2_HOST}.{PROXY_DOMAIN}/pcs/Pcs.do`）の全hiddenフィールドをPOST
+2. レスポンスHTML内の `fmpost2` フォーム（action=`https://{SKS_SSK2_URL}/pcs/Pcs.do`）の全hiddenフィールドをPOST
    - hiddenに `kcd`, `rmad`, `hk`(ハッシュ), `knm`, `tcd`, `tnm`, `uid`, `gmflag` 等が含まれる
    - このPOSTでssk2ドメインのJSESSIONIDが発行される
 3. 以降 `PcsPrintMondai.do`, `PcsSaiten.do`, `PcsCurriculum.do` 等にアクセス可能
@@ -1187,7 +1187,7 @@ data: cmd=remove&code={教室コード}:{No}
 ## 成績管理メニュー (`/service/nssk.wpp`)
 
 ### 概要
-nssk.wppにアクセスすると**別ドメイン `{SKS_SSK1_HOST}.{PROXY_DOMAIN}`** にリダイレクトされる。
+nssk.wppにアクセスすると**別ドメイン `{SKS_SSK1_URL}`** にリダイレクトされる。
 PCSがssk2なのに対し、成績管理はssk1。Java Servlet(.do)ベース。
 
 ### 遷移
@@ -1204,9 +1204,9 @@ PCSがssk2なのに対し、成績管理はssk1。Java Servlet(.do)ベース。
 | レーダーチャート | `SpiderWebChart.do` | |
 | 学校別各種設定 | `MasterMenu.do` | マスタ管理 |
 | 操作マニュアル | `help/manual.pdf` | PDFリンク |
-| WebSKSメニュー | メインメニューに戻る | `https://{SKS_PROXY_HOST}/service/` |
+| WebSKSメニュー | メインメニューに戻る | `https://{SKS_BASE_URL}/service/` |
 
-※ ベースURL: `https://{SKS_SSK1_HOST}.{PROXY_DOMAIN}/nssk/`
+※ ベースURL: `https://{SKS_SSK1_URL}/nssk/`
 ※ Copyright 2009-2024 Tactgroup INC.
 
 ### 各画面の詳細
