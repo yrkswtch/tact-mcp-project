@@ -32,7 +32,7 @@ except ImportError:
 mcp = FastMCP("SKS")
 
 # --- Configuration ---
-BASE_URL = os.environ.get("SKS_BASE_URL", "")
+BASE_URL = os.environ.get("SKS_BASE_URL", "http://tacs.tacsvpn")
 ACCOUNT = os.environ.get("SKS_ACCOUNT", "")
 PASSWORD = os.environ.get("SKS_PASSWORD", "")
 CLASSROOM = os.environ.get("SKS_CLASSROOM", "5558")
@@ -580,7 +580,7 @@ def sks_inquiry_register(
 # PCS Tools
 # =====================
 
-SSK2_URL = os.environ.get("SKS_SSK2_URL", "")
+SSK2_URL = os.environ.get("SKS_SSK2_URL", "http://ssk2.tacsvpn")
 _pcs_session_ready: bool = False
 
 
