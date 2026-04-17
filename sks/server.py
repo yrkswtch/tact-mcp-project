@@ -500,14 +500,16 @@ def sks_inquiry_register(
         full_addr = address_city + address_detail
         postal_code = _lookup_zip(full_addr)
 
-    # 学校区分・学年
+    # 学校区分・学年（半角数字→全角数字に正規化してからマッチ）
+    _han2zen = str.maketrans("0123456789", "０１２３４５６７８９")
+    grade_norm = grade.translate(_han2zen) if grade else ""
     schoolkb = ""
     grade_val = ""
-    if grade and grade in _GRADE_TO_SCHOOLKB:
-        schoolkb, grade_val = _GRADE_TO_SCHOOLKB[grade]
+    if grade_norm and grade_norm in _GRADE_TO_SCHOOLKB:
+        schoolkb, grade_val = _GRADE_TO_SCHOOLKB[grade_norm]
 
     # 対象年齢
-    age_val = _GRADE_TO_AGE.get(grade, "10")  # デフォルト: 不詳
+    age_val = _GRADE_TO_AGE.get(grade_norm, "10")  # デフォルト: 不詳
 
     # 問合せ者
     inquirer_map = {"父": "1", "母": "2", "本人": "3", "その他": "4"}

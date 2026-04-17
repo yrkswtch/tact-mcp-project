@@ -40,10 +40,21 @@ def _get_session() -> requests.Session:
     """ログイン済みセッションを取得（未ログインなら自動ログイン）
 
     【重要】ログイン失敗時はリトライしない。繰り返し失敗するとアカウントロックされる。
+    セッションタイムアウト検知: 既存セッションでtop.phpをGETし、
+    「ログインタイムアウト」が含まれていたらセッション破棄→再ログイン。
     """
     global _session, _login_failed
     if _session is not None:
-        return _session
+        # セッションが生きているか確認
+        r = _session.get(f"{BASE_URL}/contents/class/top/top.php")
+        try:
+            text = r.content.decode("euc-jp", errors="ignore")
+        except Exception:
+            text = r.text
+        if "ログインタイムアウト" not in text:
+            return _session
+        # タイムアウト → セッション破棄して再ログイン
+        _session = None
     if _login_failed:
         raise Exception(
             "Login previously failed. NOT retrying to avoid account lockout. "

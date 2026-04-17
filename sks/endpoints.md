@@ -1166,9 +1166,24 @@ GET で検索フォーム表示。フレームなし単一ページ。3つのフ
 #### Python/MCPからの削除
 ```
 POST /service/tryers/listup.wpp
-data: cmd=remove&code=5558:{No}
+data: cmd=remove&code={教室コード}:{No}
 ```
 - 削除は不可逆。確認ダイアログは出ない（Pythonからの場合）
+- GUI上の`remove()`も確認ダイアログなしで即削除する
+
+#### ⚠ cmd=update で空データを送ってはいけない
+`cmd=update`で全フィールド空のPOSTを送ると、問い合わせ管理(listup.wpp)の検索からは消えるが、外部生検索(IEB012.wpp)にはレコード枠（空行）が残るゴミデータになる。削除は必ず`cmd=remove`を使うこと。
+
+#### Python/MCPからの更新
+```
+POST /service/tryers/listup.wpp
+data: cmd=update&number={No}&kyoshitsucd={教室コード}&seitosm=...（全フィールド必須）
+```
+- 事前にsearch→editの遷移は不要。直接`cmd=update`をPOSTすればサーバーは受け付ける
+- **全フィールドを送る必要がある**。省略したフィールドは空で上書きされる
+
+#### 学年フィールドの正規化
+`_GRADE_TO_SCHOOLKB`辞書のキーは全角数字（`中学３年`）。入力が半角数字（`中学3年`）の場合マッチしないため、`sks_inquiry_register`内で半角→全角に正規化してからマッチする。
 
 #### 編集の自動化手順
 1. `listup.wpp` を開く
