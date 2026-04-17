@@ -87,6 +87,33 @@ SKSには2種類のダイアログがある:
 | `カリキュラム作成を押して` | 予定登録済み |
 | `単元を選択し問題作成を` | サイクル完了 |
 
+### 単元チェックボックスの操作
+
+**`.checked = true` だけでは不十分。** 各チェックボックスのonclickに `tgSelectChange(stage, code, checked)` が紐づいており、この関数がTangenListの内部状態とDOM背景色を更新する。`.checked`を直接変更してもDOMイベントが発火しないため、`doCheckboxes()`がchecks文字列を生成する際にチェック済みと認識されない。
+
+正しい方法:
+```javascript
+const cb = document.getElementById('tg1201_31');
+cb.checked = true;
+tgSelectChange('1', '1201_31', true);  // onclickのハンドラと同じ関数を呼ぶ
+```
+
+全単元を一括チェック:
+```javascript
+const cbs = document.querySelectorAll('input[type="checkbox"][name^="tg"]');
+for (const cb of cbs) {
+  if (!cb.checked) {
+    cb.checked = true;
+    const m = cb.getAttribute('onclick').match(/tgSelectChange\('(\d+)',\s*'([^']+)',/);
+    if (m) tgSelectChange(m[1], m[2], true);
+  }
+}
+```
+
+全解除は `cmd_alloff()` で可能。解除後の背景色は `clWhite` になる。
+
+**MCP（Python POST）の場合**: HTML内の `doCheckbox("1", "1201_31", "color|Navy")` パターンを正規表現で抽出して色情報を取得し、checksを直接構築する。TangenListのJS変数は使わない。GUI操作とは別のアプローチ。
+
 ### TangenList
 
 - `TangenList` はObject型（Arrayではない）。`TangenList['1']`, `['2']`, `['3']` にステージ別の単元データが格納
@@ -105,8 +132,8 @@ SKSには2種類のダイアログがある:
 ### ⑤予定登録
 
 - `cmd_updy()` は単元チェックボックスがチェックされていないと「目標単元を選択してください」のネイティブalertが出る
-- checksの生成は `doCheckboxes(GMODE, stg, 'checked')` が行う
-- TangenListが空だとchecksも空になり、サーバーが無視する
+- checksの生成は `doCheckboxes(GMODE, stg, 'checked')` が内部的に行う
+- `tgSelectChange()` を呼ばずに `.checked = true` しただけだと、checksが空になりサーバーが無視する
 
 ### ⑥カリキュラム作成 (PcsCurriculum.do)
 
