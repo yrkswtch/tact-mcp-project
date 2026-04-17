@@ -24,18 +24,77 @@ window.open = function(url, name, features) {
 - ページ遷移するとJS上書きがリセットされるため、遷移先でも再設定が必要
 - `win = null` をログインページで実行しておくと「SKS画面は既に開かれています」ダイアログを防げる
 
-## 独自モーダル vs ネイティブダイアログ
+## ダイアログ対策
 
 SKSには2種類のダイアログがある:
 
-| 種類 | 検知方法 | 対処 |
-|------|---------|------|
-| **独自モーダル** | `#_overRideModalOK` 要素の存在 | `document.getElementById('_overRideModalOK').click()` |
-| **ネイティブalert/confirm** | Chrome DevTools MCPでは直接検知できない | `handle_dialog` ツールで `action: accept` |
+| 種類 | 例 | 問題 |
+|------|-----|------|
+| **独自モーダル** | 問い合わせ管理「更新して宜しいですか？」「選択されていません」 | `#_overRideModalOK` クリックで対処可 |
+| **ネイティブalert/confirm** | PCS「目標単元を選択してください」「登録しました」 | JSスレッドをブロックし、`evaluate_script`が返らなくなる |
 
-- 問い合わせ管理の「更新して宜しいですか？」→ 独自モーダル
-- PCS系統図の「目標単元を選択してください」→ ネイティブalert
-- 問い合わせ管理の「選択されていません」→ 独自モーダル
+### ネイティブダイアログの置き換え（推奨）
+
+ネイティブのalert/confirmはJSスレッドをブロックするため、DevToolsからの操作が止まる。`handle_dialog`で閉じられる場合もあるが、`evaluate_script`が返らないタイミングでは呼べない。
+
+**解決策:** ページ内にモーダルHTMLを注入し、alert/confirmを上書きする。ページ遷移するたびに再注入が必要。
+
+```javascript
+// モーダルHTML注入
+const div = document.createElement('div');
+div.id = '_injectedModal';
+div.innerHTML = `
+  <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:none;justify-content:center;align-items:center;" id="_modalOverlay">
+    <div style="background:white;padding:20px;border-radius:5px;min-width:300px;text-align:center;">
+      <p id="_modalMsg"></p>
+      <button id="_overRideModalOK" style="padding:5px 20px;margin-top:10px;">OK</button>
+    </div>
+  </div>
+`;
+document.body.appendChild(div);
+
+// alert置き換え
+window.alert = function(msg) {
+  document.getElementById('_modalMsg').textContent = msg;
+  document.getElementById('_modalOverlay').style.display = 'flex';
+  document.getElementById('_modalCancel') && (document.getElementById('_modalCancel').style.display = 'none');
+  return new Promise(resolve => {
+    document.getElementById('_overRideModalOK').onclick = function() {
+      document.getElementById('_modalOverlay').style.display = 'none';
+      resolve();
+    };
+  });
+};
+
+// confirm置き換え
+window.confirm = function(msg) {
+  document.getElementById('_modalMsg').textContent = msg;
+  document.getElementById('_modalOverlay').style.display = 'flex';
+  let cancel = document.getElementById('_modalCancel');
+  if (!cancel) {
+    cancel = document.createElement('button');
+    cancel.id = '_modalCancel';
+    cancel.textContent = 'キャンセル';
+    cancel.style.cssText = 'padding:5px 20px;margin-top:10px;margin-left:10px;';
+    document.getElementById('_overRideModalOK').parentElement.appendChild(cancel);
+  }
+  cancel.style.display = 'inline';
+  return new Promise(resolve => {
+    document.getElementById('_overRideModalOK').onclick = function() {
+      document.getElementById('_modalOverlay').style.display = 'none';
+      resolve(true);
+    };
+    cancel.onclick = function() {
+      document.getElementById('_modalOverlay').style.display = 'none';
+      resolve(false);
+    };
+  });
+};
+```
+
+操作: `document.getElementById('_overRideModalOK').click()` でOK、`document.getElementById('_modalCancel').click()` でキャンセル。
+
+SKS本体（.wpp）ページには元々独自モーダル（`#_overRideModalOK`）が存在するが、PCS系統図（ssk2ドメイン）には存在しないため、この注入が必要。
 
 ## 問い合わせ管理 (tryers)
 
