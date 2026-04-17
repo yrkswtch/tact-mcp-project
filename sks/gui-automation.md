@@ -37,64 +37,87 @@ SKSには2種類のダイアログがある:
 
 ネイティブのalert/confirmはJSスレッドをブロックするため、DevToolsからの操作が止まる。`handle_dialog`で閉じられる場合もあるが、`evaluate_script`が返らないタイミングでは呼べない。
 
-**解決策:** ページ内にモーダルHTMLを注入し、alert/confirmを上書きする。ページ遷移するたびに再注入が必要。
+**解決策:** ページ内にモーダルHTMLを注入し、alert/confirm/form.submitを上書きする。ページ遷移（document.write）するたびに再注入が必要。
+
+**動作ルール:**
+- **alert（OKのみ）**: 1秒表示→自動でOKを押す。人間が目で確認する時間を与えつつ止めない
+- **confirm（OK/キャンセル）**: 2択を表示したまま残す。5秒待って自動でOK。人間がキャンセルを押せば中断
+- **form.submit後のalert**: fetchでPOSTを受け、レスポンス内のalertをモーダルで1秒表示してからページを書き込む
 
 ```javascript
-// モーダルHTML注入
-const div = document.createElement('div');
-div.id = '_injectedModal';
-div.innerHTML = `
-  <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:none;justify-content:center;align-items:center;" id="_modalOverlay">
-    <div style="background:white;padding:20px;border-radius:5px;min-width:300px;text-align:center;">
-      <p id="_modalMsg"></p>
-      <button id="_overRideModalOK" style="padding:5px 20px;margin-top:10px;">OK</button>
-    </div>
-  </div>
-`;
-document.body.appendChild(div);
+// --- モーダルHTML注入 ---
+if (!document.getElementById('_injectedModal')) {
+  var div = document.createElement('div');
+  div.id = '_injectedModal';
+  div.innerHTML = '<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;display:none;justify-content:center;align-items:center;" id="_modalOverlay"><div style="background:white;padding:20px;border-radius:5px;min-width:300px;text-align:center;"><p id="_modalMsg"></p><button id="_overRideModalOK" style="padding:5px 20px;margin-top:10px;">OK</button><button id="_modalCancel" style="padding:5px 20px;margin-top:10px;margin-left:10px;display:none;">キャンセル</button></div></div>';
+  document.body.appendChild(div);
+}
 
-// alert置き換え
+// --- alert: 1秒表示→自動閉じ ---
 window.alert = function(msg) {
   document.getElementById('_modalMsg').textContent = msg;
   document.getElementById('_modalOverlay').style.display = 'flex';
-  document.getElementById('_modalCancel') && (document.getElementById('_modalCancel').style.display = 'none');
-  return new Promise(resolve => {
+  var c = document.getElementById('_modalCancel'); if (c) c.style.display = 'none';
+  return new Promise(function(resolve) {
     document.getElementById('_overRideModalOK').onclick = function() {
-      document.getElementById('_modalOverlay').style.display = 'none';
-      resolve();
+      document.getElementById('_modalOverlay').style.display = 'none'; resolve();
     };
+    setTimeout(function() {
+      document.getElementById('_modalOverlay').style.display = 'none'; resolve();
+    }, 1000);
   });
 };
 
-// confirm置き換え
+// --- confirm: 2択表示、5秒後自動OK ---
 window.confirm = function(msg) {
   document.getElementById('_modalMsg').textContent = msg;
   document.getElementById('_modalOverlay').style.display = 'flex';
-  let cancel = document.getElementById('_modalCancel');
-  if (!cancel) {
-    cancel = document.createElement('button');
-    cancel.id = '_modalCancel';
-    cancel.textContent = 'キャンセル';
-    cancel.style.cssText = 'padding:5px 20px;margin-top:10px;margin-left:10px;';
-    document.getElementById('_overRideModalOK').parentElement.appendChild(cancel);
-  }
-  cancel.style.display = 'inline';
-  return new Promise(resolve => {
+  var c = document.getElementById('_modalCancel'); if (c) c.style.display = 'inline';
+  return new Promise(function(resolve) {
+    var resolved = false;
     document.getElementById('_overRideModalOK').onclick = function() {
-      document.getElementById('_modalOverlay').style.display = 'none';
-      resolve(true);
+      if (!resolved) { resolved = true; document.getElementById('_modalOverlay').style.display = 'none'; resolve(true); }
     };
-    cancel.onclick = function() {
-      document.getElementById('_modalOverlay').style.display = 'none';
-      resolve(false);
+    document.getElementById('_modalCancel').onclick = function() {
+      if (!resolved) { resolved = true; document.getElementById('_modalOverlay').style.display = 'none'; resolve(false); }
     };
+    setTimeout(function() {
+      if (!resolved) { resolved = true; document.getElementById('_modalOverlay').style.display = 'none'; resolve(true); }
+    }, 5000);
+  });
+};
+
+// --- form.submit: fetchで受けてalertを1秒モーダル表示 ---
+HTMLFormElement.prototype.submit = function() {
+  var form = this;
+  var formData = new FormData(form);
+  var action = form.action || location.href;
+  var method = (form.method || 'GET').toUpperCase();
+  fetch(action, {
+    method: method,
+    body: method === 'POST' ? new URLSearchParams(formData) : undefined,
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+  }).then(function(r) { return r.text(); }).then(function(html) {
+    var alertMatch = html.match(/alert\s*\(\s*["']([^"']+)["']\s*\)/);
+    if (alertMatch) {
+      document.getElementById('_modalMsg').textContent = alertMatch[1];
+      document.getElementById('_modalOverlay').style.display = 'flex';
+      var c = document.getElementById('_modalCancel'); if (c) c.style.display = 'none';
+    }
+    html = html.replace(/([^_])alert\s*\(/g, '$1console.log("ALERT:", ');
+    setTimeout(function() {
+      var el = document.getElementById('_modalOverlay');
+      if (el) el.style.display = 'none';
+      document.open(); document.write(html); document.close();
+    }, alertMatch ? 1000 : 0);
   });
 };
 ```
 
-操作: `document.getElementById('_overRideModalOK').click()` でOK、`document.getElementById('_modalCancel').click()` でキャンセル。
-
-SKS本体（.wpp）ページには元々独自モーダル（`#_overRideModalOK`）が存在するが、PCS系統図（ssk2ドメイン）には存在しないため、この注入が必要。
+**注意:**
+- `document.write`後にモーダルHTML・上書きが全て消えるため、遷移後に再注入が必要
+- SKS本体（.wpp）ページには元々独自モーダル（`#_overRideModalOK`）が存在するが、PCS系統図（ssk2ドメイン）には存在しないため、この注入が必要
+- window.openの上書きも同時に行うこと（別セクション参照）
 
 ## 問い合わせ管理 (tryers)
 
