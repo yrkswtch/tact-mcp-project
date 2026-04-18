@@ -4,18 +4,44 @@ MCP (Model Context Protocol) servers for automating cram school (School IE) clas
 
 Built for Claude Code. Handles student management, inquiry tracking, website content updates, and PCS test system.
 
-## Install as Plugin
+## 前提条件
 
-```bash
+- [Claude Code](https://claude.ai/code) がインストールされていること
+- Python 3.12 以上
+- TACT VPN に接続できるネットワーク環境（SKS/WebSupport へのアクセスに必要）
+- 以下のPythonパッケージ:
+  ```bash
+  pip install mcp requests beautifulsoup4 pycryptodome
+  ```
+
+## インストール
+
+Claude Code 内で以下を実行:
+
+```
 /plugin install tact-mcp@yrkswtch/tact-mcp-project
 ```
 
-Or test locally:
+インストール時に以下の情報を聞かれます（パスワードはキーチェーンに安全に保存されます）:
+
+| 設定項目 | 説明 | 例 |
+|---------|------|-----|
+| sks_base_url | SKS接続先URL | http://tacs.tacsvpn |
+| sks_ssk2_url | PCSドメインURL | http://ssk2.tacsvpn |
+| sks_account | SKSログインID（8桁） | 55XX0001 |
+| sks_password | SKSパスワード | ******** |
+| sks_classroom | 教室コード（4桁） | 55XX |
+| websupport_account | WebSupportログインID（8桁） | 55XX2774 |
+| websupport_password | WebSupportパスワード | ******** |
+| schoolie_username | 教室HP CMSユーザー名 | 55XX |
+| schoolie_password | 教室HP CMSパスワード | ******** |
+
+### ローカルテスト
+
 ```bash
+git clone https://github.com/yrkswtch/tact-mcp-project.git
 claude --plugin-dir ./tact-mcp-project
 ```
-
-On install, you'll be prompted for your classroom credentials (SKS, WebSupport, Schoolie-net).
 
 ## Project Structure
 
