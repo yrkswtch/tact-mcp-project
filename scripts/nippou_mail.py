@@ -31,7 +31,7 @@ from googleapiclient.discovery import build
 
 # --- 設定（環境変数またはここを書き換え） ---
 USER_EMAIL = os.environ.get("NIPPOU_USER_EMAIL", "")
-NIPPOU_TO = os.environ.get("NIPPOU_TO", "nippou@nksysg.com")
+NIPPOU_TO = os.environ.get("NIPPOU_TO", "")
 TOKEN_PATH = Path(os.environ.get("NIPPOU_TOKEN_PATH", str(Path.home() / ".google_workspace_mcp" / "credentials" / f"{USER_EMAIL}.json")))
 NIPPOU_DIR = Path(os.environ.get("NIPPOU_DIR", ""))
 NIPPOU_EXCEL_TEMPLATE = os.environ.get("NIPPOU_EXCEL_TEMPLATE", "日報{year}年{month}月【{classroom}】.xlsx")
