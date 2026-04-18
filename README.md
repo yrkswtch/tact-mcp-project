@@ -22,19 +22,7 @@ Claude Code 内で以下を実行:
 /plugin install tact-mcp@yrkswtch/tact-mcp-project
 ```
 
-インストール時に以下の情報を聞かれます（パスワードはキーチェーンに安全に保存されます）:
-
-| 設定項目 | 説明 | 例 |
-|---------|------|-----|
-| sks_base_url | SKS接続先URL | http://tacs.tacsvpn |
-| sks_ssk2_url | PCSドメインURL | http://ssk2.tacsvpn |
-| sks_account | SKSログインID（8桁） | 55XX0001 |
-| sks_password | SKSパスワード | ******** |
-| sks_classroom | 教室コード（4桁） | 55XX |
-| websupport_account | WebSupportログインID（8桁） | 55XX2774 |
-| websupport_password | WebSupportパスワード | ******** |
-| schoolie_username | 教室HP CMSユーザー名 | 55XX |
-| schoolie_password | 教室HP CMSパスワード | ******** |
+You'll be prompted to enter your classroom credentials on install. Passwords are stored securely in the system keychain.
 
 ### ローカルテスト
 
