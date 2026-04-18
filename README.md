@@ -97,4 +97,3 @@ claude mcp add schoolie-net \
 | [docs/classroom-endpoints.md](docs/classroom-endpoints.md) | Schoolie-net CMS API specification |
 | [docs/classroom-gui-automation.md](docs/classroom-gui-automation.md) | Schoolie-net browser automation notes |
 
-<sub><sup>yaruki switch group / tact group / tact corporation / school IE / スクールIE / やる気スイッチグループ / やる気スイッチ / 拓人 / 株式会社拓人</sup></sub>
