@@ -4,19 +4,17 @@ MCP (Model Context Protocol) servers for automating cram school (School IE) clas
 
 Built for Claude Code. Handles student management, inquiry tracking, website content updates, and PCS test system.
 
-## 前提条件
+## Prerequisites
 
-- [Claude Code](https://claude.ai/code) がインストールされていること
-- Python 3.12 以上
-- TACT VPN に接続できるネットワーク環境（SKS/WebSupport へのアクセスに必要）
-- 以下のPythonパッケージ:
+- [Claude Code](https://claude.ai/code) or any MCP-compatible AI agent
+- Python 3.12+
+- Network access to TACT VPN (required for SKS/WebSupport)
+- Python packages:
   ```bash
   pip install mcp requests beautifulsoup4 pycryptodome
   ```
 
-## インストール
-
-Claude Code 内で以下を実行:
+## Install (Claude Code Plugin)
 
 ```
 /plugin install tact-mcp@yrkswtch/tact-mcp-project
@@ -24,7 +22,7 @@ Claude Code 内で以下を実行:
 
 You'll be prompted to enter your classroom credentials on install. Passwords are stored securely in the system keychain.
 
-### ローカルテスト
+### Local Testing
 
 ```bash
 git clone https://github.com/yrkswtch/tact-mcp-project.git
@@ -56,7 +54,7 @@ tact-mcp-project/
 
 ## Manual Setup (without plugin)
 
-If not using the plugin system, register each MCP server manually:
+For MCP-compatible agents other than Claude Code, register each server manually:
 
 ```bash
 # SKS
