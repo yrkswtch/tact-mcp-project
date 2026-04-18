@@ -1,6 +1,6 @@
 # tact-mcp-project
 
-MCP (Model Context Protocol) servers for automating cram school (School IE) classroom operations.
+MCP (Model Context Protocol) servers for automating cram school classroom operations.
 
 Built for Claude Code. Handles student management, inquiry tracking, website content updates, and PCS test system.
 
