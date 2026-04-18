@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "sks": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/sks/server.py"],
+      "env": {
+        "SKS_BASE_URL": "${user_config.sks_base_url}",
+        "SKS_SSK2_URL": "${user_config.sks_ssk2_url}",
+        "SKS_ACCOUNT": "${user_config.sks_account}",
+        "SKS_PASSWORD": "${user_config.sks_password}",
+        "SKS_CLASSROOM": "${user_config.sks_classroom}"
+      }
+    },
+    "tact-websupport": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/websupport/server.py"],
+      "env": {
+        "WEBSUPPORT_URL": "${user_config.websupport_url}",
+        "WEBSUPPORT_ACCOUNT": "${user_config.websupport_account}",
+        "WEBSUPPORT_PASSWORD": "${user_config.websupport_password}"
+      }
+    },
+    "schoolie-net": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/classroom-web-update/server.py"],
+      "env": {
+        "SCHOOLIE_USERNAME": "${user_config.schoolie_username}",
+        "SCHOOLIE_PASSWORD": "${user_config.schoolie_password}"
+      }
+    }
+  }
+}
