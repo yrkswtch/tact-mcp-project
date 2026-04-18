@@ -1,0 +1,21 @@
+{
+  "name": "tact-mcp",
+  "description": "MCP servers for cram school (School IE) classroom operations - student management, inquiry tracking, website CMS, PCS test system",
+  "version": "1.0.0",
+  "author": { "name": "yrkswtch" },
+  "repository": "https://github.com/yrkswtch/tact-mcp-project",
+  "license": "MIT",
+  "keywords": ["school-ie", "cram-school", "student-management", "mcp"],
+  "userConfig": {
+    "sks_base_url": { "description": "SKS base URL (default: http://tacs.tacsvpn)", "sensitive": false },
+    "sks_ssk2_url": { "description": "SKS PCS domain URL (default: http://ssk2.tacsvpn)", "sensitive": false },
+    "sks_account": { "description": "SKS login ID (8 digits)", "sensitive": false },
+    "sks_password": { "description": "SKS login password", "sensitive": true },
+    "sks_classroom": { "description": "Classroom code (4 digits)", "sensitive": false },
+    "websupport_url": { "description": "WebSupport URL (default: https://www.tactgroup.net)", "sensitive": false },
+    "websupport_account": { "description": "WebSupport login ID (8 digits)", "sensitive": false },
+    "websupport_password": { "description": "WebSupport login password", "sensitive": true },
+    "schoolie_username": { "description": "Schoolie-net CMS username (classroom code)", "sensitive": false },
+    "schoolie_password": { "description": "Schoolie-net CMS password", "sensitive": true }
+  }
+}
