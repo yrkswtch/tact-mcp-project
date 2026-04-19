@@ -51,7 +51,10 @@
   2. POST applicantEdit.php?rei={ID}&num=1 + btnToConfirm=更新内容を確認する → 確認画面
   3. POST applicantEdit.php?rei={ID}&num=1 + btnRegister=登録する → 確定（Detailにリダイレクト）
   - **EUC-JPエンコード必須**（applicantNewと同じ）
-  - **必須フィールド**: カナ（空なら「ア」で補完）、inspire/motive（最低1つ=1）、inquiry、relationship、sex、grade、prefecture
+  - **必須フィールド**: 保護者姓カナ(parent_kana_sei)のみ（空なら「ア」で補完）、inspire/motive（最低1つ=1）、inquiry、relationship、sex、grade、prefecture
+    - ※ parent_kana_mei / student_kana_sei / student_kana_mei は**任意**。空欄OK、「ア」を入れないこと
+  - **日時フィールド**: `trial_time` / `interview_time` 等は `YYYY-MM-DD HH:MM` **ハイフン区切り**。スラッシュ形式はエラー文言なしでフォームに戻される
+  - **体験関連フィールド名**: `trial_time`（体験日時）/ `trial_support_staff`（体験担当講師）/ `trial_memo`（体験時メモ）
   - フォーム全体を送信する必要あり（変更フィールドだけでなく全hidden+input+select+textarea+checkbox）
   - settle_batch.py の settle_one() に完動する実装あり
   - ✅ 実装完了: applicant_update_memo, applicant_update ツール
