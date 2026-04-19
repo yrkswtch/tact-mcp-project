@@ -1232,7 +1232,7 @@ def applicant_register(
     Args:
         parent_name_sei: 保護者姓（漢字）
         parent_name_mei: 保護者名（漢字）
-        parent_kana_sei: 保護者姓カナ（全角カタカナ。漢字から推定して入れる。どうしても推定不能なら「ア」）
+        parent_kana_sei: 保護者姓カナ（必須。全角カタカナ。漢字から推定して入れる。どうしても推定不能なら「ア」）。※保護者名カナ(parent_kana_mei)・生徒カナは必須ではないので「ア」を入れないこと
         student_name_sei: 生徒姓（漢字、不明なら空）
         student_name_mei: 生徒名（漢字、不明なら空）
         tel: 電話番号（ハイフンなし）
@@ -1426,13 +1426,13 @@ def _applicant_edit_post(applicant_id: str, overrides: dict) -> str:
     for k, v in overrides.items():
         parts.append(f"{euc(k)}={euc(v)}")
 
-    # Required field补完: 保護者カナが空なら「ア」、生徒カナは空のままでOK
-    for field in ["parent_kana_sei", "parent_kana_mei"]:
-        ef = euc(field)
-        has_val = any(p.startswith(f"{ef}=") and len(p) > len(f"{ef}=") for p in parts)
-        if not has_val:
-            parts = [p for p in parts if not p.startswith(f"{ef}=")]
-            parts.append(f"{ef}={euc('ア')}")
+    # Required field补完: 保護者姓カナ(parent_kana_sei)のみ必須。空なら「ア」を入れる。
+    # parent_kana_mei / student_kana_* はフォーム上必須ではないので空のままでOK（「ア」を入れない）
+    ef = euc("parent_kana_sei")
+    has_val = any(p.startswith(f"{ef}=") and len(p) > len(f"{ef}=") for p in parts)
+    if not has_val:
+        parts = [p for p in parts if not p.startswith(f"{ef}=")]
+        parts.append(f"{ef}={euc('ア')}")
 
     # inspire/motive: at least one must be =1
     if not any("inspire" in p and p.endswith("=1") for p in parts):
@@ -1546,7 +1546,7 @@ def applicant_update(
 ) -> str:
     """問い合わせの各フィールドを更新する。指定したフィールドのみ更新。
 
-    注意: カナの姓名は必ずペアで指定すること。片方だけ更新すると不整合になる。
+    注意: 必須フィールドは保護者姓カナ(parent_kana_sei)のみ。名(parent_kana_mei)・生徒カナは任意（空欄OK、「ア」を入れない）。
 
     Args:
         applicant_id: 問合せNO（例: "752167"）
