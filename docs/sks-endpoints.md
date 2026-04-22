@@ -357,6 +357,75 @@ IEB010と同じ構成: 郵便番号(+検索) / 住所1〜3 / 電話番号 / 緊�
 | クリア | enabled | フォームリセット |
 | 終了 | enabled | 画面を閉じる |
 
+### POST API — GUIなし直接登録 (2026-04-22 確定)
+
+- エンドポイント: `POST /service/IEB040.wpp`
+- Content-Type: `application/x-www-form-urlencoded`（UTF-8）
+- 事前に `GET /service/IEB040.wpp` でフォーム状態を確立してから POST すること
+
+#### POSTパラメータ
+
+| name | 必須 | 値 | 備考 |
+|---|---|---|---|
+| `cmd` | ✓ | `regist` | 登録/更新とも同じ |
+| `gaibuseikb` | ✓ | `0`=講習会生 / `1`=ETS体験生 | ラジオ |
+| `gaibuseicd` | ✓ | 空=**新規**, `26G034`等=**更新** | 新規登録成功時に自動採番（`YY`+`G`+`連番3桁`） |
+| `entryyear` | ✓ | `2026` | 登録年度 |
+| `seitosm` | ✓ | 生徒氏名（漢字） | |
+| `hogosha` | ✓ (講習会生) | 保護者氏名（フルネーム） | 講習会生では必須 |
+| `seitokm` | ✓ | `ｵｶﾞﾜ ﾕﾒｶ` | **半角カナ**必須。JSで全角→半角自動変換ありだが POST では半角で送る |
+| `seitoem` | — | 半角英字フリガナ | 空でOK |
+| `seitosex` | ✓ | `0`=男 / `1`=女 | |
+| `datebirth` | ✓ | `20111028` | YYYYMMDD（hidden、ハイフンなし） |
+| `imdatebirth` | ✓ | `2011/10/28` | YYYY/MM/DD（UI表示用） |
+| `seitograde` | ✓ | `15` | 学年コード（下表参照） |
+| `postalcd` | — | `3340057` | ハイフンなし7桁 |
+| `impostalcd` | — | `334-0057` | ハイフン付き |
+| `ad1` / `ad2` / `ad3` | — | 住所1/2/3 | カンマ不可 |
+| `telno` | — | `090-9954-3850` | ハイフン付き許可 |
+| `emtelno` | — | 緊急連絡先TEL | |
+| `emdest` | — | 緊急連絡先宛先 | |
+| `biko` | — | 備考 | 教室によって運用が異なる(連絡先メアドを入れる例など) |
+| `ToiawaseNO` / `ToiawaseFLG` | — | 空 | 問合せ経由でない場合は空 |
+| `kumi` / `n9labo` / `ac_n9labo` / `hshogaku` / `shogaku` / `hchugaku` / `chugaku` / `hkoukou` / `koukou` | — | 空OK | 学校関連、通常は省略 |
+
+#### 学年コード（seitograde）
+```
+00:0歳  01:1歳  02:2歳  03:3歳  04:4歳  05:5歳  06:6歳
+07:小学1年  08:小学2年  09:小学3年  10:小学4年  11:小学5年  12:小学6年
+13:中学1年  14:中学2年  15:中学3年
+16:高校1年  17:高校2年  18:高校3年
+19:成人    99:その他
+```
+
+#### 成功レスポンス
+HTMLの JavaScript 内に以下が埋め込まれる：
+```
+await alert("生徒コード：26G034 を登録しました。");   ← 新規
+await alert("生徒コード：26G034 を更新しました。");   ← 更新
+```
+正規表現: `生徒コード：([0-9A-Z]+)\s*を(登録|更新)しました`
+
+#### エラーレスポンス
+- 文字チェックNG: `sjcheck.pl` で pre-check、使用不可文字あれば `alert("生徒氏名に使用出来ない文字...")`
+- バリデーションNG: `await alert("{field}を指定してください。")`
+
+### 問合せ → 外部生 転送 (2026-04-22 確定)
+
+問合せ管理画面の **検索→選択** ボタン押下時、外部生登録画面にGETでリダイレクト：
+
+```
+GET /service/IEB040.wpp?mode=toiawase&kyoshitsucd={教室コード}&gaibuseicd=&gaibuseikb=&seitocd={教室コード}:{問合せNO}
+```
+
+レスポンスHTMLには問合せ情報が pre-fill されている（`seitosm`/`hogosha`/`seitograde`/`postalcd`/`impostalcd`/`ad1`/`ad2`/`telno`/`entryyear`）。
+
+**注意**: `seitocd` は `{教室コード}:1184` のように **教室コード:問合せの内部ID** 形式。問合せの内部ID（例: 1184）は `listup.wpp` で取得した `No` とは異なる場合あり。
+
+#### MCP実装
+- `sks_gaibusei_register(student_name, guardian_name, kana, grade, birth, ...)` — 最小入力から直接POST
+- `sks_gaibusei_register_from_inquiry(inquiry_no, kana, birth, sex, memo, ...)` — 問合せ→外部生フローを再現
+
 ## 生徒登録 (`/service/IEB010.wpp`)
 
 ### ページ構造
@@ -1542,6 +1611,88 @@ GET /service/IEB420.wpp?cmd=ax&param=0|2  → 英語
 
 ### 備考
 WN金額は参照表示のみ。WN回収金を振込画面で入力しないこと。
+
+### POST API — GUIなし直接登録 (2026-04-22 確定)
+
+- エンドポイント: `POST /service/IEB070.wpp`
+- Content-Type: `application/x-www-form-urlencoded`
+- 事前に `GET /service/IEB070.wpp` でフォーム状態を確立してから POST
+- GUIフローは `dopost()` → `_xmlload("chk|...")` → `dopost_confirm()` の3段階だが、`chk` は「既存データ上書き可否」の事前チェックなので、直接 POST すれば採番・保存される
+
+#### POSTパラメータ
+
+| name | 必須 | 値 | 備考 |
+|---|---|---|---|
+| `mode` | ✓ | `regist` | |
+| `seitocd` | ✓ | 生徒コード(例: `26G034`) | |
+| `shoriym` | ✓ | 処理年月 YYYYMM(例: `202604`) | |
+| `seitoshubetsu` | ✓ | `0`=内部生(振込者) / `1`=内部生(WN) / `2`=外部生 | |
+| `chushutsu` | 外部生時 | 抽出期間(日、例: `10000`) | 外部生での一覧フィルタ |
+| `furikomidt` | ✓ | 振込票発行日 YYYYMMDD | 処理年月の範囲内 |
+| `shiharaidt` | ✓ | 支払期日 YYYYMMDD | `> furikomidt` |
+| `ctlno` | FCFLG=0時 | 教室管理番号(4桁) | 空なら自動採番 |
+| `nocvsfee` | — | `Y`=収納手数料教室負担 | |
+| `bcomment` | — | 請求明細コメント(60文字以内) | |
+| `scrolltop` | — | スクロール位置(保存せず) | |
+| **授業料行** (1-10): | | | |
+| `if1rsel{n}` | — | コース/料金コード(例: `11092/15`) | |
+| `if1ksel{n}` | — | 回数(`1`/`2`/`3`) | |
+| `if1taisho{n}` | — | 対象月 YYYYMM | |
+| `if1koma{n}` | — | コマ数 | |
+| **諸経費行** (21-30): | | | |
+| `ifbsel{n}` | — | 分類コード(下表) | `n` = 21-30 |
+| `ifrsel{n}` | — | 料金コード(例: `61480/99`) | |
+| `ifkomasu{n}` | — | 数量 | |
+| `iftanka{n}` | — | 単価 | |
+| `ifkingaku{n}` | — | 金額 | = `iftanka × ifkomasu` |
+| `ifcb{n}` | — | 削除チェック(空 or `1`) | |
+| `ifminus{n}` | — | 符号(`0` or `1`) | |
+| `iftext{n}` | — | 備考 | |
+| **講習会費行** (41-45 の削除cbは常に送信) | | | |
+
+#### 分類コード (ifbsel)
+```
+19: 授業料値引
+50: 別途教材費
+60: テスト費（ﾃｽﾄ費）  ← 英検/漢検/数検の検定料はここ
+70: その他
+91: 講習会費（テキスト代）
+92: 講習会費オプション（テスト費）
+93: 講習会費オプション（ファイル代）
+81-83: 春期/夏期/冬期講習会費（if3bsel 用）
+```
+
+#### 料金コード取得 (IEB071)
+分類を設定後、料金名の右の虫眼鏡ボタンで `GET /service/subwin/IEB071.wpp?shoriym=YYYYMM&seitocd={code}&shubetsu=2&bunrui={分類コード}&pc=if2rsel1` がダイアログ表示される。
+
+検索は iframe 内の `dosearch()` で `GET /service/subwin/IEB071.wpp?mode=ax&param={shoriym}|{shubetsu}|{seitocd}|{bunrui}|{pc}||{keyword}` を叩き、レスポンスに `trsel_modal(this,"{料金コード}","{料金名}")` のリストが返る。
+
+代表例 (2026-04 時点):
+```
+61480/99  英検団体検定料2級(1次準 2次本)   ¥6,800
+61482/99  英検団体検定料準2級(1次準 2次本) ¥6,000
+61484/99  英検団体検定料3級(1次準 2次本)   ¥4,900
+61486/99  英検団体検定料4級(1次準 2次本)   ¥2,800
+61488/99  英検団体検定料5級(1次準 2次本)   ¥2,400
+```
+※ 「1次準 2次本」= 1次試験 準会場 / 2次試験 本会場。準会場利用の教室はこの選択肢を使う
+
+#### 成功レスポンス
+HTML内に新しい行が追加されている:
+```html
+<TR id='TR_{seitocd}_{furikomidt}' ...>
+  <TD>{連番}</TD> <TD>{退会日}</TD> <TD>{学年}</TD>
+  <TD>{生徒コード} : {氏名}</TD>
+  <TD>{YYYY/MM/DD 振込票発行日}</TD>
+  <TD>{4桁教室管理番号}</TD>
+  <TD>...金額...</TD> ...
+</TR>
+```
+正規表現: `TR_{seitocd}_{furikomidt}.*?([0-9]{4})`(教室管理番号)
+
+#### MCP実装
+- `sks_bill_register(student_code, bill_date, due_date, category, ryokin_code, quantity, unit_price, ...)` — 直接POST
+- `sks_ryokin_search(student_code, category, keyword)` — 料金コード検索
 
 ## 入金入力 (`/service/IEB290.wpp`)
 

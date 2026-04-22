@@ -392,6 +392,58 @@ _GRADE_TO_SCHOOLKB = {
     "高校１年": ("4", "1"), "高校２年": ("4", "2"), "高校３年": ("4", "3"),
 }
 
+# --- 外部生登録(IEB040)の学年コード ---
+# 00-06:0歳〜6歳, 07-12:小1〜小6, 13-15:中1〜中3, 16-18:高1〜高3, 19:成人, 99:その他
+_GRADE_TO_GAIBUSEI_CODE = {
+    "0歳": "00", "1歳": "01", "2歳": "02", "3歳": "03", "4歳": "04", "5歳": "05", "6歳": "06",
+    "小学１年": "07", "小学２年": "08", "小学３年": "09",
+    "小学４年": "10", "小学５年": "11", "小学６年": "12",
+    "中学１年": "13", "中学２年": "14", "中学３年": "15",
+    "高校１年": "16", "高校２年": "17", "高校３年": "18",
+    "成人": "19", "その他": "99",
+}
+
+
+def _kana_to_halfwidth(text: str) -> str:
+    """全角カタカナ・ひらがなを半角カタカナに変換（IEB040 seitokmに必須）"""
+    if not text:
+        return ""
+    # ひらがな→全角カタカナ
+    zenkaku = "".join(
+        chr(ord(c) + 0x60) if "\u3041" <= c <= "\u3096" else c
+        for c in text
+    )
+    # 全角カタカナ → 半角カタカナ
+    z2h = {
+        "ア": "ｱ", "イ": "ｲ", "ウ": "ｳ", "エ": "ｴ", "オ": "ｵ",
+        "カ": "ｶ", "キ": "ｷ", "ク": "ｸ", "ケ": "ｹ", "コ": "ｺ",
+        "サ": "ｻ", "シ": "ｼ", "ス": "ｽ", "セ": "ｾ", "ソ": "ｿ",
+        "タ": "ﾀ", "チ": "ﾁ", "ツ": "ﾂ", "テ": "ﾃ", "ト": "ﾄ",
+        "ナ": "ﾅ", "ニ": "ﾆ", "ヌ": "ﾇ", "ネ": "ﾈ", "ノ": "ﾉ",
+        "ハ": "ﾊ", "ヒ": "ﾋ", "フ": "ﾌ", "ヘ": "ﾍ", "ホ": "ﾎ",
+        "マ": "ﾏ", "ミ": "ﾐ", "ム": "ﾑ", "メ": "ﾒ", "モ": "ﾓ",
+        "ヤ": "ﾔ", "ユ": "ﾕ", "ヨ": "ﾖ",
+        "ラ": "ﾗ", "リ": "ﾘ", "ル": "ﾙ", "レ": "ﾚ", "ロ": "ﾛ",
+        "ワ": "ﾜ", "ヲ": "ｦ", "ン": "ﾝ",
+        "ガ": "ｶﾞ", "ギ": "ｷﾞ", "グ": "ｸﾞ", "ゲ": "ｹﾞ", "ゴ": "ｺﾞ",
+        "ザ": "ｻﾞ", "ジ": "ｼﾞ", "ズ": "ｽﾞ", "ゼ": "ｾﾞ", "ゾ": "ｿﾞ",
+        "ダ": "ﾀﾞ", "ヂ": "ﾁﾞ", "ヅ": "ﾂﾞ", "デ": "ﾃﾞ", "ド": "ﾄﾞ",
+        "バ": "ﾊﾞ", "ビ": "ﾋﾞ", "ブ": "ﾌﾞ", "ベ": "ﾍﾞ", "ボ": "ﾎﾞ",
+        "パ": "ﾊﾟ", "ピ": "ﾋﾟ", "プ": "ﾌﾟ", "ペ": "ﾍﾟ", "ポ": "ﾎﾟ",
+        "ァ": "ｧ", "ィ": "ｨ", "ゥ": "ｩ", "ェ": "ｪ", "ォ": "ｫ",
+        "ッ": "ｯ", "ャ": "ｬ", "ュ": "ｭ", "ョ": "ｮ",
+        "ー": "ｰ", "・": "･", "　": " ",
+    }
+    return "".join(z2h.get(c, c) for c in zenkaku)
+
+
+def _normalize_grade_key(grade: str) -> str:
+    """学年表記を正規化（半角数字→全角数字）"""
+    if not grade:
+        return ""
+    _han2zen = str.maketrans("0123456789", "０１２３４５６７８９")
+    return grade.translate(_han2zen)
+
 
 @mcp.tool()
 def sks_inquiry_search(
@@ -575,6 +627,521 @@ def sks_inquiry_register(
         "postal_code": postal_code,
         "phone": phone,
         "verified": found,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_gaibusei_register(
+    student_name: str,
+    guardian_name: str,
+    kana: str,
+    grade: str,
+    birth: str,
+    sex: str = "",
+    postal_code: str = "",
+    address_city: str = "",
+    address_detail: str = "",
+    address_building: str = "",
+    phone: str = "",
+    emergency_phone: str = "",
+    emergency_dest: str = "",
+    memo: str = "",
+    entry_year: str = "",
+    kubun: str = "講習会生",
+    gaibusei_code: str = "",
+) -> str:
+    """SKS外部生登録(IEB040)に新規登録する(講習会生/ETS体験生)。
+
+    Args:
+        student_name: 生徒氏名(例: "小川 夢禾")
+        guardian_name: 保護者氏名(例: "小川 亮子")。フルネーム必須。
+        kana: 生徒フリガナ(全角/半角カタカナ/ひらがな可、自動で半角カナへ変換)
+        grade: 学年(例: "中学3年", "高校2年", "小学4年", "成人")
+        birth: 生年月日(YYYY/MM/DD 例: "2011/10/28")
+        sex: 性別("女"/"男"/"1"/"0"。1=女, 0=男。空なら男)
+        postal_code: 郵便番号(空なら住所から自動逆引き)
+        address_city: 住所1 都道府県市区町村(例: "埼玉県{市区名}")
+        address_detail: 住所2 番地(例: "{町名}2-7-19")
+        address_building: 住所3 建物名
+        phone: 電話番号(ハイフンなしでもOK)
+        emergency_phone: 緊急連絡先TEL
+        emergency_dest: 緊急連絡先宛先
+        memo: 備考
+        entry_year: 登録年度 YYYY(空なら今年)
+        kubun: 外部生区分("講習会生" or "ETS体験生")
+        gaibusei_code: 既存コード(更新時のみ、新規は空)
+    """
+    s = _get_session()
+
+    # 年度
+    if not entry_year:
+        entry_year = datetime.now().strftime("%Y")
+
+    # 性別コード
+    sex_map = {"男": "0", "女": "1", "0": "0", "1": "1", "": "0"}
+    sex_code = sex_map.get(sex, "0")
+
+    # 学年コード
+    grade_key = _normalize_grade_key(grade)
+    if grade_key not in _GRADE_TO_GAIBUSEI_CODE:
+        return json.dumps({
+            "result": "NG", "error": f"unknown grade: {grade}",
+            "hint": "'中学3年', '高校2年', '小学4年', '成人', 'その他' etc."
+        }, ensure_ascii=False)
+    grade_code = _GRADE_TO_GAIBUSEI_CODE[grade_key]
+
+    # 生年月日
+    try:
+        datetime.strptime(birth, "%Y/%m/%d")
+    except ValueError:
+        return json.dumps({
+            "result": "NG", "error": f"invalid birth format: {birth}",
+            "hint": "YYYY/MM/DD"
+        }, ensure_ascii=False)
+    datebirth = birth.replace("/", "")
+
+    # 電話番号整形
+    phone_fmt = _format_phone(phone) if phone else ""
+    emtelno_fmt = _format_phone(emergency_phone) if emergency_phone else ""
+
+    # 郵便番号逆引き
+    if not postal_code and address_city:
+        postal_code = _lookup_zip(address_city + address_detail)
+    postal_no_hyphen = postal_code.replace("-", "") if postal_code else ""
+    postal_with_hyphen = (
+        f"{postal_no_hyphen[:3]}-{postal_no_hyphen[3:]}"
+        if len(postal_no_hyphen) == 7 else postal_code
+    )
+
+    # フリガナ半角カナ変換
+    kana_half = _kana_to_halfwidth(kana) if kana else ""
+
+    # 外部生区分
+    kubun_code = "1" if kubun == "ETS体験生" else "0"
+
+    # フォーム状態を確立
+    s.get(f"{BASE_URL}/service/IEB040.wpp")
+
+    data = {
+        "cmd": "regist",
+        "ToiawaseNO": "",
+        "ToiawaseFLG": "",
+        "gaibuseikb": kubun_code,
+        "gaibuseicd": gaibusei_code,  # 空=新規, コード指定=更新
+        "entryyear": entry_year,
+        "seitosm": student_name,
+        "hogosha": guardian_name,
+        "seitokm": kana_half,
+        "seitoem": "",
+        "seitosex": sex_code,
+        "datebirth": datebirth,
+        "imdatebirth": birth,
+        "seitograde": grade_code,
+        "kumi": "",
+        "n9labo": "", "ac_n9labo": "",
+        "hshogaku": "", "shogaku": "",
+        "hchugaku": "", "chugaku": "",
+        "hkoukou": "", "koukou": "",
+        "postalcd": postal_no_hyphen,
+        "impostalcd": postal_with_hyphen,
+        "ad1": address_city,
+        "ad2": address_detail,
+        "ad3": address_building,
+        "telno": phone_fmt,
+        "emtelno": emtelno_fmt,
+        "emdest": emergency_dest,
+        "biko": memo,
+    }
+
+    r = s.post(f"{BASE_URL}/service/IEB040.wpp", data=data)
+    r.encoding = "utf-8"
+    html = r.text
+
+    m = re.search(r"生徒コード：([0-9A-Z]+)\s*を(登録|更新)しました", html)
+    if m:
+        return json.dumps({
+            "result": "OK",
+            "gaibusei_code": m.group(1),
+            "operation": m.group(2),
+            "student_name": student_name,
+            "kana": kana_half,
+            "grade_code": grade_code,
+            "postal_code": postal_with_hyphen,
+        }, ensure_ascii=False, indent=2)
+
+    m_err = re.search(r'await alert\("([^"]+)"\)', html)
+    if m_err:
+        return json.dumps({
+            "result": "NG",
+            "error": m_err.group(1),
+            "student_name": student_name,
+        }, ensure_ascii=False, indent=2)
+
+    return json.dumps({
+        "result": "UNKNOWN",
+        "hint": "No success/error pattern matched in response",
+        "student_name": student_name,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_gaibusei_register_from_inquiry(
+    inquiry_no: str,
+    kana: str,
+    birth: str,
+    sex: str = "",
+    memo: str = "",
+    emergency_phone: str = "",
+    emergency_dest: str = "",
+    kubun: str = "講習会生",
+) -> str:
+    """SKS問合せデータから外部生登録(IEB040)にコピーして登録する。
+
+    問合せ管理から「検索→選択」で遷移するのと同じ動作。
+    生徒氏名・保護者氏名・学年・住所・電話番号は問合せから自動転記される。
+    フリガナ・性別・生年月日・備考だけ補完する。
+
+    Args:
+        inquiry_no: SKS問合せNO(例: "1184")
+        kana: 生徒フリガナ(全角/半角カナ/ひらがな可)
+        birth: 生年月日(YYYY/MM/DD)
+        sex: 性別("女"/"男"/"1"/"0"。空なら男)
+        memo: 備考(転記先に残る)
+        emergency_phone: 緊急連絡先TEL
+        emergency_dest: 緊急連絡先宛先
+        kubun: 外部生区分("講習会生" or "ETS体験生")
+    """
+    s = _get_session()
+
+    kubun_code = "1" if kubun == "ETS体験生" else "0"
+    sex_map = {"男": "0", "女": "1", "0": "0", "1": "1", "": "0"}
+    sex_code = sex_map.get(sex, "0")
+    kana_half = _kana_to_halfwidth(kana) if kana else ""
+
+    # 生年月日バリデーション
+    try:
+        datetime.strptime(birth, "%Y/%m/%d")
+    except ValueError:
+        return json.dumps({"result": "NG", "error": f"invalid birth: {birth}"}, ensure_ascii=False)
+
+    # 問合せから外部生登録画面へ転送: 問合せ管理→選択と同じGET
+    # GET /service/IEB040.wpp?mode=toiawase&kyoshitsucd={CLASSROOM}&gaibuseicd=&gaibuseikb=&seitocd={CLASSROOM}:{inquiry_no}
+    r_load = s.get(
+        f"{BASE_URL}/service/IEB040.wpp",
+        params={
+            "mode": "toiawase",
+            "kyoshitsucd": CLASSROOM,
+            "gaibuseicd": "",
+            "gaibuseikb": "",
+            "seitocd": f"{CLASSROOM}:{inquiry_no}",
+        },
+    )
+    r_load.encoding = "utf-8"
+    html = r_load.text
+
+    # レスポンスHTMLから pre-filled 値を抽出
+    def _extract_value(name: str) -> str:
+        pat = rf'name="{re.escape(name)}"[^>]*value="([^"]*)"'
+        m = re.search(pat, html)
+        if m:
+            return m.group(1)
+        # 逆順パターン(value が先)
+        pat2 = rf'value="([^"]*)"[^>]*name="{re.escape(name)}"'
+        m2 = re.search(pat2, html)
+        return m2.group(1) if m2 else ""
+
+    seitosm = _extract_value("seitosm")
+    hogosha = _extract_value("hogosha")
+    seitograde = _extract_value("seitograde")
+    postalcd = _extract_value("postalcd")
+    impostalcd = _extract_value("impostalcd")
+    ad1 = _extract_value("ad1")
+    ad2 = _extract_value("ad2")
+    ad3 = _extract_value("ad3")
+    telno = _extract_value("telno")
+    entryyear = _extract_value("entryyear") or datetime.now().strftime("%Y")
+
+    if not seitosm:
+        return json.dumps({
+            "result": "NG",
+            "error": "Failed to load inquiry data — is the inquiry_no correct?",
+            "inquiry_no": inquiry_no,
+        }, ensure_ascii=False)
+
+    data = {
+        "cmd": "regist",
+        "ToiawaseNO": "",
+        "ToiawaseFLG": "",
+        "gaibuseikb": kubun_code,
+        "gaibuseicd": "",
+        "entryyear": entryyear,
+        "seitosm": seitosm,
+        "hogosha": hogosha,
+        "seitokm": kana_half,
+        "seitoem": "",
+        "seitosex": sex_code,
+        "datebirth": birth.replace("/", ""),
+        "imdatebirth": birth,
+        "seitograde": seitograde,
+        "kumi": "",
+        "n9labo": "", "ac_n9labo": "",
+        "hshogaku": "", "shogaku": "",
+        "hchugaku": "", "chugaku": "",
+        "hkoukou": "", "koukou": "",
+        "postalcd": postalcd,
+        "impostalcd": impostalcd,
+        "ad1": ad1, "ad2": ad2, "ad3": ad3,
+        "telno": telno,
+        "emtelno": _format_phone(emergency_phone) if emergency_phone else "",
+        "emdest": emergency_dest,
+        "biko": memo,
+    }
+
+    r = s.post(f"{BASE_URL}/service/IEB040.wpp", data=data)
+    r.encoding = "utf-8"
+    r_html = r.text
+    m = re.search(r"生徒コード：([0-9A-Z]+)\s*を(登録|更新)しました", r_html)
+    if m:
+        return json.dumps({
+            "result": "OK",
+            "gaibusei_code": m.group(1),
+            "operation": m.group(2),
+            "student_name": seitosm,
+            "grade_code": seitograde,
+            "from_inquiry_no": inquiry_no,
+        }, ensure_ascii=False, indent=2)
+
+    m_err = re.search(r'await alert\("([^"]+)"\)', r_html)
+    if m_err:
+        return json.dumps({"result": "NG", "error": m_err.group(1)}, ensure_ascii=False)
+
+    return json.dumps({"result": "UNKNOWN"}, ensure_ascii=False)
+
+
+# --- 分類コード (IEB070 ifbsel) ---
+_BUNRUI_CODE = {
+    "授業料値引": "19",
+    "別途教材費": "50",
+    "テスト費": "60",
+    "ﾃｽﾄ費": "60",
+    "その他": "70",
+    "講習会費（テキスト代）": "91",
+    "講習会費（ﾃｷｽﾄ代）": "91",
+    "講習会費オプション（テスト費）": "92",
+    "講習会費ｵﾌﾟｼｮﾝ（ﾃｽﾄ費）": "92",
+    "講習会費オプション（ファイル代）": "93",
+    "講習会費ｵﾌﾟｼｮﾝ（ﾌｧｲﾙ代）": "93",
+}
+
+_SEITOSHUBETSU_CODE = {
+    "内部生": "0", "内部生（振込者）": "0",
+    "WN": "1", "内部生（WN請求者）": "1",
+    "外部生": "2",
+}
+
+
+@mcp.tool()
+def sks_bill_register(
+    student_code: str,
+    bill_date: str,
+    due_date: str,
+    category: str,
+    ryokin_code: str,
+    quantity: int,
+    unit_price: int,
+    student_type: str = "外部生",
+    shoriym: str = "",
+    chushutsu: str = "10000",
+    ctlno: str = "",
+    comment: str = "",
+    additional_items: list = None,
+) -> str:
+    """SKS振込者用料金入力(IEB070)に請求行を登録する。
+
+    Args:
+        student_code: 生徒コード(例: "26G035")
+        bill_date: 振込票発行日(YYYY/MM/DD)
+        due_date: 支払期日(YYYY/MM/DD)
+        category: 分類("テスト費" / "別途教材費" / "授業料値引" / "その他" /
+                  "講習会費（テキスト代）" / "講習会費オプション（テスト費）" /
+                  "講習会費オプション（ファイル代）")
+        ryokin_code: 料金コード(例: "61480/99" = 英検団体検定料2級)
+        quantity: 数量
+        unit_price: 単価(円)
+        student_type: 生徒種別("内部生" / "WN" / "外部生")。外部生の場合 chushutsu 必須
+        shoriym: 処理年月(YYYYMM)。空なら今月
+        chushutsu: 抽出期間(外部生時のみ、単位=日、デフォルト10000)
+        ctlno: 教室管理番号(空なら自動採番)
+        comment: 請求明細のコメント(全半角60文字以内)
+        additional_items: 追加の諸経費行(最大9行)。
+          形式: [{"category": "...", "ryokin_code": "...",
+                  "quantity": 1, "unit_price": 0}, ...]
+    """
+    s = _get_session()
+
+    # 分類コード解決
+    bsel = _BUNRUI_CODE.get(category)
+    if not bsel:
+        return json.dumps({
+            "result": "NG", "error": f"unknown category: {category}",
+            "valid_categories": list(_BUNRUI_CODE.keys()),
+        }, ensure_ascii=False)
+
+    # 生徒種別コード解決
+    ssb = _SEITOSHUBETSU_CODE.get(student_type)
+    if ssb is None:
+        return json.dumps({
+            "result": "NG", "error": f"unknown student_type: {student_type}",
+        }, ensure_ascii=False)
+
+    # 処理年月
+    if not shoriym:
+        shoriym = datetime.now().strftime("%Y%m")
+
+    # 日付変換
+    furikomidt = bill_date.replace("/", "").replace("-", "")
+    shiharaidt = due_date.replace("/", "").replace("-", "")
+
+    # フォーム状態を確立
+    s.get(f"{BASE_URL}/service/IEB070.wpp")
+
+    kingaku = quantity * unit_price
+    data = {
+        "mode": "regist",
+        "seitocd": student_code,
+        "scrolltop": "0",
+        "shoriym": shoriym,
+        "ctlno": ctlno,
+        "chushutsu": chushutsu if ssb == "2" else "",
+        "bcomment": comment,
+        "seitoshubetsu": ssb,
+        "furikomidt": furikomidt,
+        "shiharaidt": shiharaidt,
+        "nocvsfee": "",
+        # 諸経費 1行目 (ifbsel21 ...)
+        "ifcb21": "",
+        "ifminus21": "0",
+        "ifbsel21": bsel,
+        "ifrsel21": ryokin_code,
+        "ifkomasu21": str(quantity),
+        "iftanka21": str(unit_price),
+        "ifkingaku21": str(kingaku),
+        "iftext21": "",
+    }
+
+    # 追加行
+    total_kingaku = kingaku
+    if additional_items:
+        for i, item in enumerate(additional_items, start=1):
+            row = 21 + i
+            bsel_i = _BUNRUI_CODE.get(item["category"])
+            if not bsel_i:
+                return json.dumps({
+                    "result": "NG",
+                    "error": f"unknown category in row {row}: {item['category']}",
+                }, ensure_ascii=False)
+            qty_i = int(item["quantity"])
+            unit_i = int(item["unit_price"])
+            kin_i = qty_i * unit_i
+            total_kingaku += kin_i
+            data[f"ifcb{row}"] = ""
+            data[f"ifminus{row}"] = "0"
+            data[f"ifbsel{row}"] = bsel_i
+            data[f"ifrsel{row}"] = item["ryokin_code"]
+            data[f"ifkomasu{row}"] = str(qty_i)
+            data[f"iftanka{row}"] = str(unit_i)
+            data[f"ifkingaku{row}"] = str(kin_i)
+            data[f"iftext{row}"] = ""
+
+    # 講習会費削除チェックボックス(ブラウザ互換)
+    for row in range(41, 46):
+        data[f"ifcb{row}"] = ""
+
+    r = s.post(f"{BASE_URL}/service/IEB070.wpp", data=data)
+    r.encoding = "utf-8"
+    html = r.text
+
+    # 成功判定: TR_{seitocd}_{furikomidt} が追加されている
+    if re.search(rf"TR_{re.escape(student_code)}_{re.escape(furikomidt)}", html):
+        # 教室管理番号抽出
+        m_ctl = re.search(
+            rf"TR_{re.escape(student_code)}_{re.escape(furikomidt)}.*?"
+            rf"{re.escape(furikomidt[:4])}/{re.escape(furikomidt[4:6])}/{re.escape(furikomidt[6:])}.*?"
+            r"([0-9]{4})",
+            html, re.DOTALL)
+        return json.dumps({
+            "result": "OK",
+            "student_code": student_code,
+            "ctlno": m_ctl.group(1) if m_ctl else "auto-assigned",
+            "bill_date": bill_date,
+            "due_date": due_date,
+            "total": total_kingaku,
+        }, ensure_ascii=False, indent=2)
+
+    m_err = re.search(r'alert\("([^"]+)"\)', html)
+    if m_err:
+        return json.dumps({
+            "result": "NG", "error": m_err.group(1),
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "result": "UNKNOWN",
+        "hint": "No TR row matched in response",
+    }, ensure_ascii=False)
+
+
+@mcp.tool()
+def sks_ryokin_search(
+    student_code: str,
+    category: str,
+    keyword: str = "",
+    shoriym: str = "",
+) -> str:
+    """IEB071(料金検索)から料金コードを検索する。
+
+    振込者用料金入力(IEB070)で料金名を選ぶ前に、
+    コード("61480/99"のような)と単価を確認するのに使う。
+
+    Args:
+        student_code: 生徒コード(例: "26G035")
+        category: 分類("テスト費" など。_BUNRUI_CODE のキー)
+        keyword: 検索キーワード(例: "英検", "漢検")
+        shoriym: 処理年月(YYYYMM、空なら今月)
+    """
+    s = _get_session()
+    bsel = _BUNRUI_CODE.get(category)
+    if not bsel:
+        return json.dumps({
+            "result": "NG", "error": f"unknown category: {category}",
+        }, ensure_ascii=False)
+
+    if not shoriym:
+        shoriym = datetime.now().strftime("%Y%m")
+
+    # IEB071 料金検索エンドポイント (ax モード)
+    # param = {shoriym}|{shubetsu=2}|{seitocd}|{bunrui}|{pcName}||{keyword}
+    param = f"{shoriym}|2|{student_code}|{bsel}|if2rsel1||{keyword}"
+    r = s.get(f"{BASE_URL}/service/subwin/IEB071.wpp",
+              params={"mode": "ax", "param": param})
+    r.encoding = "utf-8"
+
+    # レスポンスに含まれる trsel_modal(...) を全抽出
+    items = []
+    for m in re.finditer(
+        r'trsel_modal\(this,"([^"]+)","([^"]+)"\)',
+        r.text
+    ):
+        code, name = m.group(1), m.group(2)
+        # 単価は直前の td に入っている
+        items.append({"code": code, "name": name})
+    # 単価も抽出(別スキャン)
+    prices = re.findall(
+        r"<td[^>]*>([\d,]+)</td>[^<]*<td[^>]*onclick=\"trsel_modal\(this,\"([^\"]+)\"",
+        r.text, re.IGNORECASE
+    )
+    return json.dumps({
+        "result": "OK", "count": len(items),
+        "items": items[:50],
     }, ensure_ascii=False, indent=2)
 
 
