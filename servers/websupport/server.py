@@ -85,8 +85,13 @@ def _get_session() -> requests.Session:
 
 
 def _parse_csv(content: bytes) -> list[dict]:
-    """CP932エンコードされたCSVをパースしてdictのリストで返す"""
-    text = content.decode("cp932")
+    """WebSupportのCSVをパースしてdictのリストで返す。
+
+    エンコーディング: Shift_JIS_2004 (JIS X 0213)。
+    cp932で読むとJIS X 0213の拡張文字(例: 萊 0xEE45)がCP932 NEC拡張領域の
+    別字(例: 珉)に文字化けするので cp932 は不可。
+    """
+    text = content.decode("shift_jis_2004")
     reader = csv.DictReader(io.StringIO(text))
     return list(reader)
 
@@ -251,8 +256,8 @@ def applicant_download_csv(output_path: str = "") -> str:
     if r.headers.get("Content-Disposition") is None:
         return json.dumps({"error": "CSV download failed."})
 
-    # CP932 → UTF-8変換して保存
-    text = r.content.decode("cp932")
+    # Shift_JIS_2004 → UTF-8変換して保存 (JIS X 0213拡張文字対応)
+    text = r.content.decode("shift_jis_2004")
     if not output_path:
         output_path = f"websupport_applicants_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
@@ -1636,7 +1641,7 @@ def applicant_delete(applicant_id: str) -> str:
 
         # 全件CSVからも探す
         r_csv = s.post(f"{BASE_URL}/contents/boshu/class/applicant/download.php", data={"btn_download": ""})
-        csv_text = r_csv.content.decode("cp932", errors="replace")
+        csv_text = r_csv.content.decode("shift_jis_2004", errors="replace")
         reader = csv.DictReader(io.StringIO(csv_text))
         target_name = None
         for row_data in reader:
