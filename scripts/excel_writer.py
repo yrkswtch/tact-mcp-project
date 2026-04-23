@@ -83,7 +83,9 @@ def get_new_applicants(s: requests.Session, last_dt: str) -> list[dict]:
         log("ERROR: CSV download failed")
         sys.exit(1)
 
-    text = r.content.decode("cp932")
+    # WebSupportのCSVはShift_JIS_2004 (JIS X 0213)。
+    # cp932で読むとJIS X 0213拡張文字(萊等)が別字(珉等)に化ける。
+    text = r.content.decode("shift_jis_2004")
     reader = csv.DictReader(io.StringIO(text))
     rows = list(reader)
 
@@ -360,7 +362,9 @@ def sync_memo_updates(s: requests.Session):
         f"{BASE_URL}/contents/boshu/class/applicant/download.php",
         data={"btn_download": ""},
     )
-    text = r.content.decode("cp932")
+    # WebSupportのCSVはShift_JIS_2004 (JIS X 0213)。
+    # cp932で読むとJIS X 0213拡張文字(萊等)が別字(珉等)に化ける。
+    text = r.content.decode("shift_jis_2004")
     reader = csv.DictReader(io.StringIO(text))
     all_rows = list(reader)
 
