@@ -10,8 +10,24 @@ description: WebSupport（tactgroup.net）の生徒受付管理・メッセー�
 
 - URL: WebSupport（環境変数 WEBSUPPORT_URL、デフォルト: https://www.tactgroup.net）
 - 認証方式: POST login.php + セッションCookie (PHPSESSID)
-- エンコーディング: EUC-JP (HTML), CP932 (CSV)
+- エンコーディング:
+  - HTML: EUC-JP 宣言、実体は euc-jisx0213（JIS X 0213拡張文字を含む）
+  - CSV ダウンロード: **Shift_JIS_2004 (JIS X 0213)**。cp932 で読むと拡張文字が化ける
+  - POST 送信: `euc-jisx0213` エンコード必須（`_euc_encode` ヘルパー）
 - セッションタイムアウト: 自動検知→再ログイン実装済み
+
+## 文字コードの落とし穴
+
+WebSupportは **JIS X 0208** に限定されたEUC-JPを宣言しているのに、実体は **JIS X 0213** 拡張文字を扱える euc-jisx0213 / shift_jis_2004 でデータを入出力している。そのためブラウザ表示とサーバー内部で一致しないケースがある。
+
+### 観測例（2026-04-23）
+生徒氏名「河野 萊駕」を登録したところ、サーバーCSVは `ee45` (shift_jis_2004の萊)、HTMLは `fba6` (euc-jisx0213の萊) を返すが、Chromeの標準EUC-JPデコーダは `fba6` を **珉 (U+73C9)** と誤デコードする。
+
+### 対処ルール
+1. **CSV読み取り**: 必ず `shift_jis_2004` で decode する。`cp932` は使わない（萊→珉 のように別字に化ける）
+2. **POST送信**: `euc-jisx0213` で URL エンコード（`_euc_encode` を使う）
+3. **JIS X 0208 外の文字**: ブラウザが正しく表示できない場合は、JIS X 0208 にある異体字（例: 萊→莱 U+83B1、髙→高、﨑→崎）に置き換える。置き換え時は元の文字を必ず記録（メモ欄や備考）。
+4. **既存データの化け確認**: CSVを `shift_jis_2004` で読んだ結果と、ブラウザで表示される文字が違う場合は、WHATWG EUC-JP デコーダのフォールバック問題。対処3を適用。
 
 ## MCPツール
 

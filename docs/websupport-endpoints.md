@@ -4,11 +4,30 @@
 ## 認証
 - POST `/contents/class/login/login.php` — ログイン (classAccount, classPassword, btnLogin.x, btnLogin.y)
 - セッション: PHPSESSID cookie
-- エンコーディング: EUC-JP (HTML), CP932 (CSV)
+- エンコーディング:
+  - HTML: `<meta http-equiv="Content-Type" content="text/html; charset=EUC-JP">` 宣言、実体は **euc-jisx0213**（JIS X 0213拡張漢字を含む）
+  - CSV ダウンロード: **Shift_JIS_2004 (JIS X 0213)**。**`cp932` は使わない** — 拡張文字が別字に化ける (例: 萊 0xEE45 → cp932: 珉 / shift_jis_2004: 萊)
+  - POST送信: `euc-jisx0213` で URL エンコード（body手組み + `Content-Type: application/x-www-form-urlencoded`）
 - Google Analytics: `_ga`, `_ga_50781TQBM9` cookie
 - JS: `/contents/class/js/default.js`（共通JS、全ページで読み込み）
 - GTM: `G-50781TQBM9`
 - **⚠ ログイン失敗を繰り返すとアカウントロック。リトライ禁止。**
+
+### 文字コードの落とし穴 (2026-04-23 解明)
+
+WebSupportのHTML charset 宣言は `EUC-JP` だが、サーバーは JIS X 0213 拡張文字を **euc-jisx0213** バイト列で出力する（例: 萊 U+840A → `0xFBA6`）。ブラウザは WHATWG EUC-JP デコーダを使い、`0xFBA6` を **珉 U+73C9** と誤マップする。結果:
+
+- サーバー内部は 萊 を正しく保持
+- Python の `euc-jisx0213` codec で読めば 萊 が取れる
+- しかしブラウザ画面では 珉 と表示される
+
+**対処**: JIS X 0208 に存在しない拡張漢字を受け付けたら、JIS X 0208 にある異体字に置換する:
+- 萊 (U+840A) → 莱 (U+83B1)
+- 髙 (U+9AD9) → 高 (U+9AD8)
+- 﨑 (U+FA11) → 崎 (U+5D0E)
+- 濵 (U+6FF5) → 浜 (U+6D5C) 等
+
+置換した事実は備考欄に残す。
 
 ## 生徒受付管理 (applicant)
 - GET `/contents/boshu/class/applicant/applicantListPre.php` — 一覧前処理（セッション確立に必要）
@@ -72,7 +91,7 @@
   - パラメータ: `btn_mail=メール通知する`
   - ※一覧画面のメール通知ボタンから遷移
 
-## CSVフィールド (58列, CP932)
+## CSVフィールド (58列, Shift_JIS_2004)
 問合せNO, 受付日時, 教室CD, 教室名, 開封状況, 開封日, ステータス, 問合せ経路,
 サービス申込日, 受付タイプ, 問合せ内容, 初回問合せ対応者, 保護者氏名（漢字）,
 保護者氏名（カナ）, 生徒との関係性, 生徒氏名（漢字）, 生徒氏名（カナ）, 電話番号,

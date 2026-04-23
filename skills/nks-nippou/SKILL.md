@@ -41,3 +41,4 @@ PYTHONIOENCODING=utf-8 python3 scripts/nippou_mail.py
 - 生徒別一覧は前回メールと同じファイルを添付する（推測しない）
 - 月末在籍・翌月申し出は前回メールの値を踏襲する
 - スクリプトのパスや日報Excelのパスは各教室の環境に合わせて修正が必要
+- **WebSupport CSV は Shift_JIS_2004 でデコードする**（`cp932` だと JIS X 0213 拡張文字が化ける。例: 萊→珉）。`scripts/excel_writer.py` は修正済み
