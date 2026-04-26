@@ -2125,6 +2125,247 @@ def sks_gaibu_preview(gaibuseicd: str, kyoshitsucd: str | None = None) -> str:
     }, ensure_ascii=False, indent=2)
 
 
+# ---------------------------------------------------------------------------
+# IEV120 コンビニ振込用紙発行依頼
+# ---------------------------------------------------------------------------
+#
+# GUI フロー:
+#   1. 「振込者用料金入力 (IEB070)」で請求行を登録（sks_bill_register）
+#   2. メインメニュー → コンビニ振込用紙発行依頼 (IEV120)
+#   3. 発行待ち行が出る → チェック（or 全て選択）→ 確定
+#   4. 「コンビニ伝票発行依頼を実行します。」OK → 状態が「CVS確定済」に
+#   5. 後日、本人宛にコンビニ払込用紙が郵送される
+#
+# プログラマブル:
+#   POST /service/IEV120.wpp
+#     cmd=regist
+#     kyoshitsucd=<教室コード>
+#     kyoshitsusm=<教室名>
+#     period=<振込票発行日 YYYY/MM/DD>
+#     CVS_<n>=<行ID 文字列、ハイフン区切り>
+#     AMT_<n>=<手数料込合計>
+#     AMT1_<n>=<請求額(税抜)>
+#     CB_<n>=1            ← 発行処理 ON
+#     SADDR_<n>=Y         ← 請求先へ送る
+#     dtcount=<行数>
+#     showcount=<表示行数>
+#     hidecount=0
+#     seikyusum=<合計表示文字列>
+#
+# CVS_<n> の値の例: "26G036-202604-1-0-20260427--20260427-330"
+#   <生徒コード>-<処理年月>-<種別>-<?>-<振込票発行日>-(空)-(発行済発行日)-<手数料>
+#
+# 確定後（再ロード時）の判定:
+#   - 状態列に「CVS確定済」と表示
+#   - CB_<n> checkbox が checked のまま
+#   - CVS_<n> 値の途中の空フィールドに発行日が埋まる
+
+_IEV120_NUM_RE = re.compile(r"^(CVS|AMT|AMT1|CB|BADDR|SADDR)_(\d+)$")
+
+
+def _iev120_parse_meta(html: str) -> dict | None:
+    """IEV120 の formmain（枠だけ）から共通フィールドを抽出。"""
+    soup = BeautifulSoup(html, "html.parser")
+    form = soup.find("form", attrs={"name": "formmain"}) or soup.find("form", attrs={"id": "formmain"})
+    if not form:
+        return None
+    meta: dict[str, str] = {}
+    for k in ("kyoshitsucd", "kyoshitsusm", "period",
+              "dtcount", "showcount", "hidecount", "seikyusum", "nocvs"):
+        el = form.find(["input"], attrs={"name": k})
+        if el is not None:
+            meta[k] = el.get("value", "") or ""
+    return meta
+
+
+def _iev120_parse_rows(html_fragment: str) -> list[dict]:
+    """IEV120 ajax VIEW のレスポンスHTML断片から行データを解析する。"""
+    soup = BeautifulSoup(html_fragment, "html.parser")
+    rows_by_idx: dict[int, dict] = {}
+    for inp in soup.find_all("input"):
+        name = inp.get("name", "")
+        m = _IEV120_NUM_RE.match(name)
+        if not m:
+            continue
+        kind, idx_s = m.group(1), m.group(2)
+        idx = int(idx_s)
+        row = rows_by_idx.setdefault(idx, {"idx": idx})
+        v = inp.get("value", "") or ""
+        if kind == "CB":
+            row["cb"] = inp.has_attr("checked")
+            row["cb_disabled"] = inp.has_attr("disabled")
+        elif kind == "BADDR":
+            row["baddr"] = v if inp.has_attr("checked") else ""
+            row["baddr_disabled"] = inp.has_attr("disabled")
+        else:
+            row[kind.lower()] = v
+
+    rows: list[dict] = []
+    for idx in sorted(rows_by_idx):
+        r = rows_by_idx[idx]
+        cvs_val = r.get("cvs", "")
+        seitocd = cvs_val.split("-", 1)[0] if cvs_val else ""
+        # 確定済判定: CVS_<n> 値の発行済発行日フィールドが埋まっているか
+        # 未確定: ...-20260427---330  / 確定済: ...-20260427--20260427-330
+        parts = cvs_val.split("-")
+        confirmed = bool(len(parts) >= 8 and parts[-2])
+        r["seitocd"] = seitocd
+        r["confirmed"] = confirmed
+        rows.append(r)
+    return rows
+
+
+def _iev120_load(s: requests.Session) -> tuple[dict | None, list[dict]]:
+    """IEV120 を初期GET + ajax VIEW で完全ロードして (meta, rows) を返す。
+
+    メイン画面 GET ではフォームの枠だけ返り、行データは ajax view で取得する仕様。
+    """
+    r1 = s.get(f"{BASE_URL}/service/IEV120.wpp")
+    r1.encoding = "utf-8"
+    meta = _iev120_parse_meta(r1.text)
+    if meta is None:
+        return None, []
+
+    r2 = s.get(
+        f"{BASE_URL}/service/IEV120.wpp",
+        params={"cmd": "ax", "param": "VIEW|N"},
+    )
+    r2.encoding = "utf-8"
+    rows = _iev120_parse_rows(r2.text)
+    # ajax レスポンスに dtcount が含まれていれば反映
+    if "dtcount" not in meta or not meta["dtcount"]:
+        m_dt = re.search(r"name='dtcount'\s+value='(\d+)'", r2.text)
+        if m_dt:
+            meta["dtcount"] = m_dt.group(1)
+    return meta, rows
+
+
+@mcp.tool()
+def sks_cvs_issue_pending() -> str:
+    """IEV120 コンビニ振込用紙発行依頼の発行待ち（および確定済み）一覧を取得。
+
+    確定したい行は seitocd（生徒コード）を sks_cvs_issue_confirm に渡す。
+    """
+    s = _get_session()
+    meta, rows = _iev120_load(s)
+    if meta is None:
+        return json.dumps({
+            "result": "NG",
+            "error": "formmain not found (session expired?)",
+        }, ensure_ascii=False, indent=2)
+    pending = [r for r in rows if not r.get("confirmed")]
+    return json.dumps({
+        "result": "OK",
+        "meta": meta,
+        "total": len(rows),
+        "pending_count": len(pending),
+        "rows": [
+            {
+                "idx": r["idx"],
+                "seitocd": r["seitocd"],
+                "amt": r.get("amt"),
+                "amt1": r.get("amt1"),
+                "cvs": r.get("cvs"),
+                "saddr": r.get("saddr"),
+                "checked": r.get("cb"),
+                "confirmed": r.get("confirmed"),
+            }
+            for r in rows
+        ],
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_cvs_issue_confirm(student_codes: list | None = None, dry_run: bool = False) -> str:
+    """IEV120 コンビニ振込用紙発行依頼を確定（CVS発行依頼）する。
+    GUI の「全て選択 → 確定 → OK」と等価。
+
+    Args:
+        student_codes: 確定したい生徒コードのリスト（例: ["26G036"]）。
+                       None または空なら、未確定の全行を確定する（GUI「全て選択」相当）。
+        dry_run: True なら POST せず送信予定データだけ返す。
+
+    確定済みの行は対象外（重複処理防止）。
+    """
+    s = _get_session()
+    meta, rows = _iev120_load(s)
+    if meta is None:
+        return json.dumps({
+            "result": "NG",
+            "error": "formmain not found (session expired?)",
+        }, ensure_ascii=False, indent=2)
+
+    # 確定済み除外、対象抽出
+    pending = [r for r in rows if not r.get("confirmed")]
+    if student_codes:
+        wanted = set(student_codes)
+        target = [r for r in pending if r["seitocd"] in wanted]
+        not_found = wanted - {r["seitocd"] for r in pending}
+    else:
+        target = pending
+        not_found = set()
+
+    if not target:
+        return json.dumps({
+            "result": "NG",
+            "error": "確定対象の行がありません（既に確定済み or 該当生徒コードなし）",
+            "not_found": list(not_found),
+            "pending_count": len(pending),
+        }, ensure_ascii=False, indent=2)
+
+    # POST データ組み立て
+    data: dict[str, str] = {
+        "cmd": "regist",
+        "kyoshitsucd": meta.get("kyoshitsucd", ""),
+        "kyoshitsusm": meta.get("kyoshitsusm", ""),
+        "period": meta.get("period", ""),
+        "dtcount": meta.get("dtcount", str(len(rows))),
+        "showcount": meta.get("showcount", str(len(rows))),
+        "hidecount": meta.get("hidecount", "0"),
+        "seikyusum": meta.get("seikyusum", ""),
+    }
+    target_idx = {r["idx"] for r in target}
+    for r in rows:
+        idx = r["idx"]
+        data[f"CVS_{idx}"] = r.get("cvs", "")
+        data[f"AMT_{idx}"] = r.get("amt", "")
+        data[f"AMT1_{idx}"] = r.get("amt1", "")
+        if r.get("saddr"):
+            data[f"SADDR_{idx}"] = r["saddr"]
+        if idx in target_idx:
+            data[f"CB_{idx}"] = "1"
+
+    if dry_run:
+        return json.dumps({
+            "result": "DRYRUN",
+            "target_count": len(target),
+            "targets": [{"seitocd": r["seitocd"], "amt": r.get("amt")} for r in target],
+            "post_keys": sorted(data.keys()),
+            "not_found": list(not_found),
+        }, ensure_ascii=False, indent=2)
+
+    r2 = s.post(f"{BASE_URL}/service/IEV120.wpp", data=data)
+    r2.encoding = "utf-8"
+
+    # 結果確認: 対象行が確定済みになっているか（再ロードで状態取得）
+    _, rows_after = _iev120_load(s)
+    after_state = {}
+    if rows_after:
+        for r in rows_after:
+            if r["seitocd"] in {tr["seitocd"] for tr in target}:
+                after_state[r["seitocd"]] = r.get("confirmed", False)
+
+    all_ok = all(after_state.get(tr["seitocd"], False) for tr in target)
+    return json.dumps({
+        "result": "OK" if all_ok else "UNKNOWN",
+        "confirmed_count": sum(1 for v in after_state.values() if v),
+        "target_count": len(target),
+        "targets": [{"seitocd": tr["seitocd"], "amt": tr.get("amt"),
+                     "confirmed": after_state.get(tr["seitocd"], False)} for tr in target],
+        "not_found": list(not_found),
+    }, ensure_ascii=False, indent=2)
+
+
 # --- Entry point ---
 if __name__ == "__main__":
     mcp.run()

@@ -1746,6 +1746,72 @@ HTML内に新しい行が追加されている:
 - `sks_bill_register(student_code, bill_date, due_date, category, ryokin_code, quantity, unit_price, ...)` — 直接POST
 - `sks_ryokin_search(student_code, category, keyword)` — 料金コード検索
 
+## コンビニ振込用紙発行依頼 (`/service/IEV120.wpp`)
+
+IEB070 で登録された振込行のうち、CVS（コンビニ）払込で発行依頼するものを確定する画面。確定するとSKSがコンビニ会社へ依頼を送り、後日 本人宛にコンビニ払込用紙が郵送される。
+
+### ページ構造
+- フレームなし単一ページ
+- 行データは **ajax で動的にロード**される（初期 GET ではフォーム枠だけ）
+- 「全て選択」/ 個別チェックで対象を選び、「確定」ボタンで POST
+
+### ロード手順 (GUIなし)
+
+1. `GET /service/IEV120.wpp`
+   - レスポンスは formmain（メタフィールドのみ）と JS。行はまだ無い
+   - メタ: `kyoshitsucd`, `kyoshitsusm`, `period`（振込票発行日 YYYY/MM/DD）, `nocvs`
+2. `GET /service/IEV120.wpp?cmd=ax&param=VIEW|N`
+   - レスポンスは行リストの HTML 断片（JSON ではなく `<TABLE>...</TABLE>` の文字列）
+   - 各行に hidden の `CVS_<n>`, `AMT_<n>`, `AMT1_<n>`, `SADDR_<n>` と checkbox `CB_<n>` / `BADDR_<n>`、最後に `<INPUT type=hidden name='dtcount' value='<件数>'>`
+
+### CVS_<n> の値フォーマット
+
+```
+<生徒コード>-<処理年月>-<種別>-<?>-<振込票発行日 YYYYMMDD>-<空 or 発行済発行日>-<空 or 発行済発行日>-<手数料>
+```
+
+例:
+- 未確定: `26G036-202604-1-0-20260427---330`
+- 確定済: `26G036-202604-1-0-20260427--20260427-330`
+
+末尾から2番目（手数料の前）が空でなければ確定済み。
+
+### 確定リクエスト
+
+```
+POST /service/IEV120.wpp
+Content-Type: application/x-www-form-urlencoded
+
+cmd=regist
+kyoshitsucd=<教室コード>
+kyoshitsusm=<教室名>
+period=<YYYY/MM/DD>
+CVS_<n>=<行ID 文字列>
+AMT_<n>=<手数料込合計>
+AMT1_<n>=<請求額>
+CB_<n>=1                ← 発行処理 ON にした行のみ
+SADDR_<n>=Y             ← 請求先へ送る hidden
+dtcount=<総行数>
+showcount=<表示行数>
+hidecount=0
+seikyusum=<合計表示文字列>
+```
+
+### 確認ダイアログ
+GUI では「確定」押下時に独自モーダル「コンビニ伝票発行依頼を実行します。」OK / キャンセル が出る。OK で POST 実行。
+
+### 成功判定
+レスポンス（または再ロード）の状態列に「**CVS確定済**」が出る。`CVS_<n>` 値の発行済発行日フィールドが埋まる。
+
+### 注意
+- **15:00 を過ぎて確定すると翌日送信**（GUIに注意書きあり）
+- `BADDR_<n>` は通常 disabled（請求先＝住所が固定）
+- 確定済行を再度確定 POST しても無害だが、対象から除外するのが望ましい
+
+### MCP実装
+- `sks_cvs_issue_pending()` — 発行待ち＋確定済み一覧（行ごとに `seitocd` / `amt` / `amt1` / `confirmed`）
+- `sks_cvs_issue_confirm(student_codes=None, dry_run=False)` — 指定生徒コード（or 全件未確定）を確定。確定済みは自動で除外
+
 ## 入金入力 (`/service/IEB290.wpp`)
 
 ### ページ構造
