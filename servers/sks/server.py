@@ -652,12 +652,15 @@ def sks_gaibusei_register(
 ) -> str:
     """SKS外部生登録(IEB040)に新規登録する(講習会生/ETS体験生)。
 
+    必須フィールド: student_name, guardian_name, kana, grade, birth。
+    特に kana(フリガナ)は **サーバー側で必須バリデーションあり**。空だと登録失敗する。
+
     Args:
-        student_name: 生徒氏名(例: "小川 夢禾")
+        student_name: 生徒氏名(例: "小川 夢禾")。必須。
         guardian_name: 保護者氏名(例: "小川 亮子")。フルネーム必須。
-        kana: 生徒フリガナ(全角/半角カタカナ/ひらがな可、自動で半角カナへ変換)
-        grade: 学年(例: "中学3年", "高校2年", "小学4年", "成人")
-        birth: 生年月日(YYYY/MM/DD 例: "2011/10/28")
+        kana: 生徒フリガナ(全角/半角カタカナ/ひらがな可、自動で半角カナへ変換)。**必須**。
+        grade: 学年(例: "中学3年", "高校2年", "小学4年", "成人")。必須。
+        birth: 生年月日(YYYY/MM/DD 例: "2011/10/28")。必須。
         sex: 性別("女"/"男"/"1"/"0"。1=女, 0=男。空なら男)
         postal_code: 郵便番号(空なら住所から自動逆引き)
         address_city: 住所1 都道府県市区町村(例: "埼玉県{市区名}")
@@ -672,6 +675,14 @@ def sks_gaibusei_register(
         gaibusei_code: 既存コード(更新時のみ、新規は空)
     """
     s = _get_session()
+
+    # フリガナ必須バリデーション（IEB040 サーバー側必須）
+    if not kana or not kana.strip():
+        return json.dumps({
+            "result": "NG",
+            "error": "kana(フリガナ) は IEB040 の必須フィールドです。空のまま登録できません。",
+            "student_name": student_name,
+        }, ensure_ascii=False)
 
     # 年度
     if not entry_year:
@@ -801,10 +812,13 @@ def sks_gaibusei_register_from_inquiry(
     生徒氏名・保護者氏名・学年・住所・電話番号は問合せから自動転記される。
     フリガナ・性別・生年月日・備考だけ補完する。
 
+    必須: kana(フリガナ) と birth(生年月日)。kana が空だとサーバー側
+    バリデーションで弾かれて UNCERTAIN になる。
+
     Args:
         inquiry_no: SKS問合せNO(例: "1184")
-        kana: 生徒フリガナ(全角/半角カナ/ひらがな可)
-        birth: 生年月日(YYYY/MM/DD)
+        kana: 生徒フリガナ(全角/半角カナ/ひらがな可)。**必須**。
+        birth: 生年月日(YYYY/MM/DD)。必須。
         sex: 性別("女"/"男"/"1"/"0"。空なら男)
         memo: 備考(転記先に残る)
         emergency_phone: 緊急連絡先TEL
@@ -812,6 +826,14 @@ def sks_gaibusei_register_from_inquiry(
         kubun: 外部生区分("講習会生" or "ETS体験生")
     """
     s = _get_session()
+
+    # フリガナ必須バリデーション（IEB040 サーバー側必須）
+    if not kana or not kana.strip():
+        return json.dumps({
+            "result": "NG",
+            "error": "kana(フリガナ) は IEB040 の必須フィールドです。空のまま登録できません。",
+            "inquiry_no": inquiry_no,
+        }, ensure_ascii=False)
 
     kubun_code = "1" if kubun == "ETS体験生" else "0"
     sex_map = {"男": "0", "女": "1", "0": "0", "1": "1", "": "0"}
@@ -1576,6 +1598,531 @@ def sks_zip_lookup(address: str) -> str:
     """
     zipcode = _lookup_zip(address)
     return json.dumps({"address": address, "postal_code": zipcode}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# IEB010 (内部生情報) 編集ヘルパー
+# ---------------------------------------------------------------------------
+#
+# IEB010 のフォームは「HTML の value 属性」と「JS で後から注入される値」の
+# 二段構成になっている。たとえば 入会日(契約日) は HTML 上は空で、
+# ページ下部の <script> に
+#     document.getElementById('imnyujukudt').value = '2022/03/07';
+# のようにリテラル代入される。さらに登録ボタン押下時、JS が
+#     formmain.nyujukudt.value = formmain.imnyujukudt.value.replace(/\//g,'')
+# のように imXXX → XXX (スラッシュ除去) でコピーする。
+#
+# requests + BeautifulSoup だけでは JS が走らないので、これら JS 注入値も
+# 正規表現で拾ってフォームデータに詰める必要がある。
+# ---------------------------------------------------------------------------
+
+# document.getElementById('imdatebirth').value= '2012/05/05';  などを抽出
+_IEB010_JS_VALUE_RE = re.compile(
+    r"""document\.getElementById\(\s*['"]([A-Za-z0-9_]+)['"]\s*\)\.value\s*=\s*['"]([^'"]*)['"]\s*;"""
+)
+
+
+def _ieb010_parse_form(html: str):
+    """IEB010 のフォームを解析して (form_data, formmain_or_None) を返す。
+    JS 注入値・imXXX→XXX のスラッシュ除去コピーまで補完する。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    form = soup.find("form", attrs={"name": "formmain"}) \
+        or soup.find("form", attrs={"id": "formmain"}) \
+        or soup.find("form", attrs={"action": re.compile(r"IEB010")})
+    if not form:
+        return None, None
+
+    data: dict[str, str] = {}
+    for inp in form.find_all("input"):
+        name = inp.get("name")
+        if not name:
+            continue
+        itype = (inp.get("type") or "text").lower()
+        v = inp.get("value", "") or ""
+        if itype == "checkbox":
+            # GUI の挙動: checked のものは value(または "on")、未チェックは送らない。
+            # ただし IEB010 では実用上ほぼ問題にならない（hidden 多用のため）。
+            if inp.has_attr("checked"):
+                data[name] = v or "on"
+        elif itype == "radio":
+            if inp.has_attr("checked"):
+                data[name] = v
+        else:
+            data[name] = v
+
+    for sel in form.find_all("select"):
+        name = sel.get("name")
+        if not name:
+            continue
+        opt = sel.find("option", selected=True)
+        if opt is None:
+            opt = sel.find("option")
+        data[name] = opt.get("value", "") if opt else ""
+
+    for ta in form.find_all("textarea"):
+        name = ta.get("name")
+        if name:
+            data[name] = ta.get_text() or ""
+
+    # JS で注入される初期値（日付など）を補完
+    for m in _IEB010_JS_VALUE_RE.finditer(html):
+        fld, val = m.group(1), m.group(2)
+        data[fld] = val
+        # imXXX (YYYY/MM/DD) → XXX (YYYYMMDD) も自動補完
+        if fld.startswith("im") and re.match(r"\d{4}/\d{2}/\d{2}$", val):
+            data[fld[2:]] = val.replace("/", "")
+
+    return data, form
+
+
+def _ieb010_load(seitocd: str):
+    """IEB010 を生徒コード指定でロードし、(data, raw_html) を返す。
+    ロード失敗時は (None, raw_html) を返す。
+    """
+    s = _get_session()
+    r = s.post(
+        f"{BASE_URL}/service/IEB010.wpp",
+        data={"seitocd": seitocd, "kyoshitsucd": ""},
+    )
+    r.encoding = "utf-8"
+    html = r.text
+    data, _form = _ieb010_parse_form(html)
+    return data, html
+
+
+def _ieb010_extract_error(html: str) -> str | None:
+    """登録レスポンスからサーバ側エラーメッセージを抽出する。なければ None。"""
+    # E00003: <契約日>を入力してください。 のようなテーブル組み込みエラー
+    m = re.search(r"E\d{5}[:：][^<\n]+", html)
+    if m:
+        return m.group(0).strip()
+    # await alert("...") 形のエラー
+    m2 = re.search(r'await\s+alert\(\s*["\']([^"\']+)["\']', html)
+    if m2 and any(kw in m2.group(1) for kw in ("失敗", "エラー", "正しく", "違反")):
+        return m2.group(1)
+    return None
+
+
+@mcp.tool()
+def sks_internal_update_memo(seitocd: str, memo: str) -> str:
+    """SKS内部生(IEB010)の備考欄(biko)を更新する。
+
+    既存のフォーム値を維持したまま備考だけを書き換える。退塾済み生徒も対象。
+
+    Args:
+        seitocd: 生徒コード（例: "210027"）
+        memo: 備考に設定する文字列（メールアドレス等）
+    """
+    return sks_internal_update_fields(seitocd, {"biko": memo})
+
+
+@mcp.tool()
+def sks_internal_update_fields(seitocd: str, fields: dict) -> str:
+    """SKS内部生(IEB010)の任意フィールドを更新する汎用ツール。
+
+    既存のフォーム値を維持したまま、指定したフィールドだけを上書きして登録する。
+    日付フィールドのような JS 注入値も自動的に補完するので、
+    フィールド名と値だけ与えれば良い。
+
+    よく使うフィールド名（IEB010 のフォーム要素名）:
+      - biko          : 備考（input[type=text]、最大50字）
+      - seitosm       : 生徒氏名
+      - seitokm       : 生徒カナ
+      - seitoem       : 生徒英字氏名
+      - postalcd / impostalcd : 郵便番号（数字7桁 / ハイフン付き表示）
+      - ad1 / ad2 / ad3 : 住所
+      - telno         : 電話番号
+      - emtelno       : 緊急連絡先電話番号
+      - emdest        : 緊急連絡先続柄
+      - hogoshamail   : 保護者メール
+      - r1name / r1zokugara / r1old / r1work : 保護者1の氏名/続柄/年齢/職業
+      - r2name / r2zokugara / r2old / r2work : 保護者2
+      - imdatebirth (YYYY/MM/DD) : 生年月日
+      - imnyujukudt (YYYY/MM/DD) : 入会日（契約日）
+
+    Args:
+        seitocd: 生徒コード（例: "210027"）
+        fields: 上書きするフィールド名→値の辞書（例: {"biko": "...", "telno": "090-..."}）
+    """
+    if not isinstance(fields, dict) or not fields:
+        return json.dumps({
+            "result": "NG",
+            "error": "fields must be a non-empty dict",
+        }, ensure_ascii=False, indent=2)
+
+    # 1. ロード
+    data, html = _ieb010_load(seitocd)
+    if data is None:
+        # ログイン画面に飛ばされた等
+        if "passwd" in (html or "") and "kyoshitsucd" in (html or ""):
+            return json.dumps({
+                "result": "NG",
+                "error": "session expired (login redirect)",
+                "seitocd": seitocd,
+            }, ensure_ascii=False, indent=2)
+        return json.dumps({
+            "result": "NG",
+            "error": "formmain not found",
+            "seitocd": seitocd,
+            "html_preview": (html or "")[:300],
+        }, ensure_ascii=False, indent=2)
+
+    before = {k: data.get(k, "") for k in fields.keys()}
+
+    # 2. 上書き
+    for k, v in fields.items():
+        data[k] = "" if v is None else str(v)
+
+    # 3. 送信前正規化: GUI の registEntry() 内で行われる im → 裏 hidden コピーを再現する。
+    #    JS:
+    #      formmain.postalcd.value = formmain.impostalcd.value.replace(/-/g, '');
+    #      formmain.nyujukudt.value = formmain.imnyujukudt.value.replace(/\//g, '');
+    #      formmain.datebirth.value = formmain.imdatebirth.value.replace(/\//g, '');
+    #
+    #    これをやらないと、サーバが返してくる impostalcd "334-0074" を
+    #    そのまま postalcd にも入れて送り返す → サーバ側で再フォーマットされて
+    #    "334--0074" のように2重ハイフンが累積する事故が起きる。
+    if data.get("impostalcd"):
+        data["postalcd"] = data["impostalcd"].replace("-", "")
+    if data.get("imnyujukudt"):
+        data["nyujukudt"] = data["imnyujukudt"].replace("/", "")
+    if data.get("imdatebirth"):
+        data["datebirth"] = data["imdatebirth"].replace("/", "")
+
+    data["cmd"] = "regist"
+    data.setdefault("TORIKOMIFLG", "1")
+
+    # 3. POST
+    s = _get_session()
+    r = s.post(f"{BASE_URL}/service/IEB010.wpp", data=data)
+    r.encoding = "utf-8"
+    html2 = r.text
+
+    err = _ieb010_extract_error(html2)
+    if err:
+        return json.dumps({
+            "result": "NG",
+            "error": err,
+            "seitocd": seitocd,
+            "fields_attempted": list(fields.keys()),
+            "before": before,
+        }, ensure_ascii=False, indent=2)
+
+    # 4. 反映確認
+    after_data, _ = _ieb010_parse_form(html2)
+    after = {}
+    if after_data is not None:
+        after = {k: after_data.get(k, "") for k in fields.keys()}
+
+    all_ok = all(
+        after.get(k, "") == ("" if v is None else str(v))
+        for k, v in fields.items()
+    )
+    return json.dumps({
+        "result": "OK" if all_ok else "UNKNOWN",
+        "seitocd": seitocd,
+        "before": before,
+        "after": after,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_internal_get_fields(seitocd: str, fields: list | None = None) -> str:
+    """SKS内部生(IEB010)のフォーム値を取得する。
+
+    更新前の値確認や、利用可能なフィールド名を調べる用途。
+
+    Args:
+        seitocd: 生徒コード
+        fields: 取得したいフィールド名のリスト。None または空なら全フィールドを返す。
+    """
+    data, html = _ieb010_load(seitocd)
+    if data is None:
+        return json.dumps({
+            "result": "NG",
+            "error": "formmain not found (session expired?)",
+            "seitocd": seitocd,
+        }, ensure_ascii=False, indent=2)
+
+    if fields:
+        sub = {k: data.get(k, "") for k in fields}
+        return json.dumps({
+            "result": "OK",
+            "seitocd": seitocd,
+            "fields": sub,
+        }, ensure_ascii=False, indent=2)
+
+    return json.dumps({
+        "result": "OK",
+        "seitocd": seitocd,
+        "fields": data,
+    }, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# 外部生 → 内部生 取り込み
+# ---------------------------------------------------------------------------
+#
+# GUI フロー:
+#   1. 生徒登録(IEB010) を開く
+#   2. 「外部生 検索」ダイアログで対象を選択 → 外部生コード等が IEB010 にロードされ、
+#      氏名・住所・電話・保護者氏名等が自動転記される
+#   3. 必須フィールド（生年月日・入会日・保護者続柄・キャンペーン種別/理由 等）を補完
+#   4. 「追加／修正」を押すと、gaibuseicd 付きで cmd=regist が POST され、
+#      サーバ側で内部生コード採番 + 外部生レコードからの取り込みが完了
+#
+# プログラマブル:
+#   ロードリクエスト:
+#     POST /service/IEB010.wpp
+#       mode=gaibu&kyoshitsucd=<教室コード>&seitocd=<外部生コード>
+#   登録リクエスト:
+#     通常の cmd=regist POST に gaibuseicd を含めるだけ
+#
+# 続柄コード（r1zokugara 等）:
+#   01=父 / 02=母 / 03=祖父 / 04=祖母 / 05=兄 / 06=姉 / 07=弟 / 08=妹
+#   09=叔父 / 10=叔母 / 11=夫 / 12=妻 / 13=本人 / 14=その他
+#
+# キャンペーン種別 (campaign) の数値コードはマスタによって変わるので、
+# ロード後の form HTML から <select name="campaign"> の option を解析して
+# 日本語名 → コード のマップを動的に作る。
+
+_ZOKUGARA_TO_CODE = {
+    "父": "01", "母": "02", "祖父": "03", "祖母": "04",
+    "兄": "05", "姉": "06", "弟": "07", "妹": "08",
+    "叔父": "09", "叔母": "10",
+    "夫": "11", "妻": "12",
+    "本人": "13", "その他": "14",
+}
+
+# YSPC「証憑データ確認」ダイアログ既定値
+# premshubetsu=4 (未登録)、premreason=2 (証憑未取得) / 3 (デジタルデバイスなし)
+_YSPC_DEFAULT_PREMSHUBETSU = "4"
+_YSPC_DEFAULT_PREMREASON = "2"
+
+
+def _ieb010_load_from_gaibu(gaibuseicd: str, kyoshitsucd: str | None = None):
+    """外部生コードを指定して IEB010 のフォームをロード。
+    外部生情報（氏名・住所・電話・保護者氏名等）が自動転記された状態の form を返す。
+
+    Returns: (data: dict, html: str)
+    """
+    s = _get_session()
+    kyo = kyoshitsucd or CLASSROOM
+    r = s.post(
+        f"{BASE_URL}/service/IEB010.wpp",
+        data={"mode": "gaibu", "kyoshitsucd": kyo, "seitocd": gaibuseicd},
+    )
+    r.encoding = "utf-8"
+    html = r.text
+    data, _form = _ieb010_parse_form(html)
+    return data, html
+
+
+def _campaign_code_map(html: str) -> dict[str, str]:
+    """<select name="campaign"> から 表示名 → value のマップを作る."""
+    soup = BeautifulSoup(html, "html.parser")
+    sel = soup.find("select", attrs={"name": "campaign"})
+    if not sel:
+        return {}
+    out: dict[str, str] = {}
+    for opt in sel.find_all("option"):
+        text = (opt.get_text() or "").strip()
+        val = opt.get("value", "")
+        if text and val:
+            out[text] = val
+    return out
+
+
+@mcp.tool()
+def sks_convert_gaibu_to_internal(
+    gaibuseicd: str,
+    nyujukudt: str,
+    datebirth: str,
+    parent1_zokugara: str = "父",
+    parent1_is_primary: bool = True,
+    campaign: str = "",
+    campaign_reason: str = "",
+    premshubetsu: str = _YSPC_DEFAULT_PREMSHUBETSU,
+    premreason: str = _YSPC_DEFAULT_PREMREASON,
+    additional_fields: dict | None = None,
+    kyoshitsucd: str | None = None,
+    dry_run: bool = False,
+) -> str:
+    """外部生(IEB040) を内部生(IEB010) として取り込む。GUI の「外部生検索→選択→追加/修正」と等価。
+
+    Args:
+        gaibuseicd: 外部生コード（例: "26G033"）
+        nyujukudt: 入会日（契約日） YYYY/MM/DD（例: "2026/04/27"）
+        datebirth: 生年月日 YYYY/MM/DD（例: "2012/04/02"）
+        parent1_zokugara: 保護者1の続柄（"父"/"母"/"祖父"等）。
+            外部生に保護者氏名が登録されていれば自動転記される。
+        parent1_is_primary: 保護者1を筆頭保護者（請求宛先）にするか。
+            False にすると rgfamily=2 (保護者2が筆頭) になる。
+        campaign: キャンペーン種別の表示名（"チラシ割引"/"ペア入塾"/"兄弟"/
+            "講習"/"再入塾"/"GLEC単独入会" のいずれか。空で未選択）
+        campaign_reason: 理由テキスト（例: "春期チラシ"）。txtriyu1 に入る。
+        premshubetsu: YSPC会員種別。"4"=未登録（既定）。
+        premreason: YSPC理由。"2"=証憑未取得（既定）/"3"=デジタルデバイスなし。
+        additional_fields: その他の上書きフィールド（dict）。
+        kyoshitsucd: 教室コード。空なら環境変数 SKS_CLASSROOM。
+        dry_run: True なら POST せずに送信予定データだけ返す（デバッグ用）。
+    """
+    # 1. 外部生情報をロード
+    data, html = _ieb010_load_from_gaibu(gaibuseicd, kyoshitsucd)
+    if data is None or not data.get("seitosm"):
+        # 外部生が見つからない / セッション切れ
+        return json.dumps({
+            "result": "NG",
+            "error": "外部生がロードできなかった（コード違い or セッション切れ？）",
+            "gaibuseicd": gaibuseicd,
+            "html_preview": (html or "")[:300],
+        }, ensure_ascii=False, indent=2)
+
+    if data.get("gaibuseicd", "") != gaibuseicd:
+        return json.dumps({
+            "result": "NG",
+            "error": f"ロード後 gaibuseicd 不一致: expected={gaibuseicd}, got={data.get('gaibuseicd')}",
+        }, ensure_ascii=False, indent=2)
+
+    # 2. ユーザ指定フィールドを上書き
+    data["imdatebirth"] = datebirth
+    data["imnyujukudt"] = nyujukudt
+    data["entryyear"] = nyujukudt[:4] if len(nyujukudt) >= 4 else data.get("entryyear", "")
+
+    z_code = _ZOKUGARA_TO_CODE.get(parent1_zokugara, "")
+    if not z_code:
+        return json.dumps({
+            "result": "NG",
+            "error": f"不明な続柄: {parent1_zokugara}（許容: {list(_ZOKUGARA_TO_CODE)}）",
+        }, ensure_ascii=False, indent=2)
+    data["r1zokugara"] = z_code
+    data["rgfamily"] = "1" if parent1_is_primary else "2"
+
+    if campaign:
+        camp_map = _campaign_code_map(html)
+        if campaign not in camp_map:
+            return json.dumps({
+                "result": "NG",
+                "error": f"不明なキャンペーン種別: {campaign}（許容: {list(camp_map)}）",
+            }, ensure_ascii=False, indent=2)
+        data["campaign"] = camp_map[campaign]
+    if campaign_reason:
+        data["txtriyu1"] = campaign_reason
+
+    # YSPC ダイアログ相当の値（GUI で OK を押した結果）
+    data["premshubetsu"] = premshubetsu
+    data["premreason"] = premreason
+
+    if additional_fields:
+        for k, v in additional_fields.items():
+            data[k] = "" if v is None else str(v)
+
+    # 3. 送信前正規化（im → 裏 hidden コピー、postalcd ハイフン除去）
+    if data.get("impostalcd"):
+        data["postalcd"] = data["impostalcd"].replace("-", "")
+    if data.get("imnyujukudt"):
+        data["nyujukudt"] = data["imnyujukudt"].replace("/", "")
+    if data.get("imdatebirth"):
+        data["datebirth"] = data["imdatebirth"].replace("/", "")
+
+    data["cmd"] = "regist"
+    data.setdefault("TORIKOMIFLG", "1")
+
+    if dry_run:
+        return json.dumps({
+            "result": "DRYRUN",
+            "gaibuseicd": gaibuseicd,
+            "preview": {
+                "seitosm": data.get("seitosm"),
+                "seitokm": data.get("seitokm"),
+                "seitosex": data.get("seitosex"),
+                "seitograde": data.get("seitograde"),
+                "imnyujukudt": data.get("imnyujukudt"),
+                "imdatebirth": data.get("imdatebirth"),
+                "ad1": data.get("ad1"),
+                "ad2": data.get("ad2"),
+                "telno": data.get("telno"),
+                "r1zokugara": data.get("r1zokugara"),
+                "r1name": data.get("r1name"),
+                "rgfamily": data.get("rgfamily"),
+                "campaign": data.get("campaign"),
+                "txtriyu1": data.get("txtriyu1"),
+                "premshubetsu": data.get("premshubetsu"),
+                "premreason": data.get("premreason"),
+            },
+        }, ensure_ascii=False, indent=2)
+
+    # 4. POST cmd=regist
+    s = _get_session()
+    r = s.post(f"{BASE_URL}/service/IEB010.wpp", data=data)
+    r.encoding = "utf-8"
+    html2 = r.text
+
+    err = _ieb010_extract_error(html2)
+    if err:
+        return json.dumps({
+            "result": "NG",
+            "error": err,
+            "gaibuseicd": gaibuseicd,
+        }, ensure_ascii=False, indent=2)
+
+    # 5. 反映確認: 新しい seitocd / keiyakushano が採番されているか
+    after_data, _ = _ieb010_parse_form(html2)
+    new_seitocd = (after_data or {}).get("seitocd", "")
+    keiyakushano = (after_data or {}).get("keiyakushano", "")
+
+    if not new_seitocd:
+        return json.dumps({
+            "result": "UNKNOWN",
+            "gaibuseicd": gaibuseicd,
+            "msg": "登録応答に seitocd がない。GUI で確認推奨",
+        }, ensure_ascii=False, indent=2)
+
+    return json.dumps({
+        "result": "OK",
+        "gaibuseicd": gaibuseicd,
+        "new_seitocd": new_seitocd,
+        "keiyakushano": keiyakushano,
+        "seitosm": (after_data or {}).get("seitosm", ""),
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_gaibu_preview(gaibuseicd: str, kyoshitsucd: str | None = None) -> str:
+    """外部生コードで IEB010 をロードした結果（自動転記される情報）を確認する。
+
+    sks_convert_gaibu_to_internal を呼ぶ前のプレビュー用。POST せず読み取りだけ。
+
+    Args:
+        gaibuseicd: 外部生コード
+        kyoshitsucd: 教室コード（空なら環境変数）
+    """
+    data, html = _ieb010_load_from_gaibu(gaibuseicd, kyoshitsucd)
+    if data is None or not data.get("seitosm"):
+        return json.dumps({
+            "result": "NG",
+            "error": "外部生がロードできなかった",
+            "gaibuseicd": gaibuseicd,
+        }, ensure_ascii=False, indent=2)
+
+    return json.dumps({
+        "result": "OK",
+        "gaibuseicd": data.get("gaibuseicd"),
+        "seitosm": data.get("seitosm"),
+        "seitokm": data.get("seitokm"),
+        "seitosex": data.get("seitosex"),
+        "seitograde": data.get("seitograde"),
+        "ad1": data.get("ad1"),
+        "ad2": data.get("ad2"),
+        "ad3": data.get("ad3"),
+        "impostalcd": data.get("impostalcd"),
+        "telno": data.get("telno"),
+        "biko": data.get("biko"),
+        "r1name": data.get("r1name"),
+        "r2name": data.get("r2name"),
+        "campaign_options": list(_campaign_code_map(html).keys()),
+    }, ensure_ascii=False, indent=2)
 
 
 # --- Entry point ---

@@ -36,12 +36,40 @@ _session: requests.Session | None = None
 _login_failed: bool = False  # ログイン失敗フラグ（リトライ防止）
 
 
+def _is_session_expired(text: str, url: str = "") -> bool:
+    """レスポンスがセッション切れ/ログイン画面かどうか判定
+
+    検知パターン:
+    1. 明示的な「ログインタイムアウト」メッセージ
+    2. 最終URLが login.php を含む（リダイレクト発生）
+    3. HTMLにログインフォーム要素 (classAccount/classPassword) が含まれる
+    4. top.php相当ページなのに「PICK UP」「TOPICS」が無い
+    """
+    if "ログインタイムアウト" in text:
+        return True
+    if "login.php" in (url or "").lower():
+        return True
+    # ログインフォーム要素の検知（POSTフォームのname属性）
+    if 'name="classAccount"' in text or 'name="classPassword"' in text:
+        return True
+    if "name='classAccount'" in text or "name='classPassword'" in text:
+        return True
+    return False
+
+
+def _is_logged_in_top(text: str) -> bool:
+    """top.php のレスポンスがログイン済み状態を示すか"""
+    # top.phpの特徴的な要素: PICK UP / TOPICS の見出し
+    return ("PICK UP" in text) or ("TOPICS" in text)
+
+
 def _get_session() -> requests.Session:
     """ログイン済みセッションを取得（未ログインなら自動ログイン）
 
     【重要】ログイン失敗時はリトライしない。繰り返し失敗するとアカウントロックされる。
-    セッションタイムアウト検知: 既存セッションでtop.phpをGETし、
-    「ログインタイムアウト」が含まれていたらセッション破棄→再ログイン。
+    セッションタイムアウト検知:
+    - 既存セッションでtop.phpをGETし、_is_session_expired() または
+      _is_logged_in_top() が False の場合はセッション破棄→再ログイン。
     """
     global _session, _login_failed
     if _session is not None:
@@ -51,9 +79,10 @@ def _get_session() -> requests.Session:
             text = r.content.decode("euc-jp", errors="ignore")
         except Exception:
             text = r.text
-        if "ログインタイムアウト" not in text:
+        # ログイン状態 = タイムアウトでない AND top.php相当の内容が表示されている
+        if not _is_session_expired(text, r.url) and _is_logged_in_top(text):
             return _session
-        # タイムアウト → セッション破棄して再ログイン
+        # タイムアウト or ログイン画面 → セッション破棄して再ログイン
         _session = None
     if _login_failed:
         raise Exception(
@@ -1548,17 +1577,29 @@ def applicant_update(
     address2: str = "",
     tel: str = "",
     email: str = "",
+    interviewed_time: str = "",
+    interview_staff: str = "",
+    interview_memo: str = "",
+    trial_time: str = "",
+    trial_support_staff: str = "",
+    trial_memo: str = "",
+    again_interviewed_time: str = "",
+    again_interview_staff: str = "",
+    again_interview_memo: str = "",
+    reply_time: str = "",
+    reply_memo: str = "",
 ) -> str:
     """問い合わせの各フィールドを更新する。指定したフィールドのみ更新。
 
     注意: 必須フィールドは保護者姓カナ(parent_kana_sei)のみ。名(parent_kana_mei)・生徒カナは任意（空欄OK、「ア」を入れない）。
+    日時はYYYY-MM-DD HH:MM形式。スラッシュ不可。
 
     Args:
         applicant_id: 問合せNO（例: "752167"）
         memo: メモ欄（空なら変更しない）
-        result: 結果（1=入会, 2=入会せず, 空なら変更しない）
+        result: 結果（1=入会, 2=入会せず, 3=講習会, 4=見込A, 5=見込B, 空なら変更しない）
         issue_date: 入会成約日 YYYY-MM-DD（空なら変更しない）
-        contact_staff: 初回問合せ対応者（1=室長, 空なら変更しない）
+        contact_staff: 初回問合せ対応者（1=室長, 2=副室長, 3=事務員, 4=講師, 5=CC, 0=その他, 空なら変更しない）
         student_name_sei: 生徒姓（漢字、空なら変更しない）
         student_name_mei: 生徒名（漢字、空なら変更しない）
         student_kana_sei: 生徒姓カナ（空なら変更しない）
@@ -1570,12 +1611,34 @@ def applicant_update(
         address2: 建物名（空なら変更しない）
         tel: 電話番号（ハイフン自動除去、空なら変更しない）
         email: メールアドレス（空なら変更しない）
+        interviewed_time: 面談日時 YYYY-MM-DD HH:MM（空なら変更しない）
+        interview_staff: 面談担当者（1=室長, 2=副室長, 3=事務員, 4=講師, 0=その他, 空なら変更しない）
+        interview_memo: 面談時メモ（空なら変更しない）
+        trial_time: 体験日時 YYYY-MM-DD HH:MM（空なら変更しない）
+        trial_support_staff: 体験担当講師（講師名テキスト、空なら変更しない）
+        trial_memo: 体験時メモ（空なら変更しない）
+        again_interviewed_time: 再面談日時 YYYY-MM-DD HH:MM（空なら変更しない）
+        again_interview_staff: 再面談担当者（同interview_staff、空なら変更しない）
+        again_interview_memo: 再面談時メモ（空なら変更しない）
+        reply_time: 返答日時 YYYY-MM-DD HH:MM（空なら変更しない）
+        reply_memo: 返答時メモ（空なら変更しない）
     """
     # 電話番号・郵便番号のハイフン自動除去
     if tel:
         tel = re.sub(r"[^\d]", "", tel)
     if zip_code:
         zip_code = re.sub(r"[^\d]", "", zip_code)
+
+    # 日時フィールド: スラッシュをハイフンに自動正規化
+    def _norm_dt(s: str) -> str:
+        if not s:
+            return s
+        return s.replace("/", "-").strip()
+
+    interviewed_time = _norm_dt(interviewed_time)
+    trial_time = _norm_dt(trial_time)
+    again_interviewed_time = _norm_dt(again_interviewed_time)
+    reply_time = _norm_dt(reply_time)
 
     overrides = {}
     field_map = {
@@ -1586,6 +1649,14 @@ def applicant_update(
         "parent_kana_sei": parent_kana_sei, "parent_kana_mei": parent_kana_mei,
         "zip_code": zip_code, "address1": address1, "address2": address2,
         "tel": tel, "email": email,
+        "interviewed_time": interviewed_time, "interview_staff": interview_staff,
+        "interview_memo": interview_memo,
+        "trial_time": trial_time, "trial_support_staff": trial_support_staff,
+        "trial_memo": trial_memo,
+        "again_interviewed_time": again_interviewed_time,
+        "again_interview_staff": again_interview_staff,
+        "again_interview_memo": again_interview_memo,
+        "reply_time": reply_time, "reply_memo": reply_memo,
     }
     for k, v in field_map.items():
         if v:
