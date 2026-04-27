@@ -1147,20 +1147,26 @@ def sks_ryokin_search(
               params={"mode": "ax", "param": param})
     r.encoding = "utf-8"
 
-    # レスポンスに含まれる trsel_modal(...) を全抽出
+    # tr 単位でブロック分割し、trsel_modal(code,name) と同じ tr 内の数値td から
+    # 単価を拾う。料金コード自体は数値だが先頭/末尾以外の数値td を残し、
+    # 100以上の値を unit_price 候補として返す。
     items = []
-    for m in re.finditer(
-        r'trsel_modal\(this,"([^"]+)","([^"]+)"\)',
-        r.text
-    ):
+    for blk in re.split(r"<tr[^>]*>", r.text):
+        m = re.search(r'trsel_modal\(this,"([^"]+)","([^"]+)"\)', blk)
+        if not m:
+            continue
         code, name = m.group(1), m.group(2)
-        # 単価は直前の td に入っている
-        items.append({"code": code, "name": name})
-    # 単価も抽出(別スキャン)
-    prices = re.findall(
-        r"<td[^>]*>([\d,]+)</td>[^<]*<td[^>]*onclick=\"trsel_modal\(this,\"([^\"]+)\"",
-        r.text, re.IGNORECASE
-    )
+        nums = re.findall(r"<td[^>]*>\s*([\d,]+)\s*</td>", blk)
+        candidates = [int(n.replace(",", "")) for n in nums if n.replace(",", "").isdigit()]
+        # 料金コード自体(5桁番号)を除外する手はあるが、
+        # 単価らしい値=最後尾の3桁以上の数値という運用で十分
+        price_candidates = [v for v in candidates if v >= 100]
+        items.append({
+            "code": code,
+            "name": name,
+            "unit_price": price_candidates[-1] if price_candidates else None,
+            "price_candidates": price_candidates,
+        })
     return json.dumps({
         "result": "OK", "count": len(items),
         "items": items[:50],
