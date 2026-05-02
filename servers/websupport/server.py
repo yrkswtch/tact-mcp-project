@@ -1577,6 +1577,10 @@ def applicant_update(
     address2: str = "",
     tel: str = "",
     email: str = "",
+    sex: str = "",
+    grade: str = "",
+    relationship: str = "",
+    school_name: str = "",
     interviewed_time: str = "",
     interview_staff: str = "",
     interview_memo: str = "",
@@ -1611,6 +1615,10 @@ def applicant_update(
         address2: 建物名（空なら変更しない）
         tel: 電話番号（ハイフン自動除去、空なら変更しない）
         email: メールアドレス（空なら変更しない）
+        sex: 性別（"1"=男性, "2"=女性、空なら変更しない）
+        grade: 学年（数値ID: 小1=1...小6=6, 中1=7...中3=9, 高1=10...高3=12, 空なら変更しない）
+        relationship: 続柄（父=1, 母=2, 祖父母=3, 本人=4, その他=0, 空なら変更しない）
+        school_name: 学校名（空なら変更しない）
         interviewed_time: 面談日時 YYYY-MM-DD HH:MM（空なら変更しない）
         interview_staff: 面談担当者（1=室長, 2=副室長, 3=事務員, 4=講師, 0=その他, 空なら変更しない）
         interview_memo: 面談時メモ（空なら変更しない）
@@ -1649,6 +1657,8 @@ def applicant_update(
         "parent_kana_sei": parent_kana_sei, "parent_kana_mei": parent_kana_mei,
         "zip_code": zip_code, "address1": address1, "address2": address2,
         "tel": tel, "email": email,
+        "sex": sex, "grade": grade, "relationship": relationship,
+        "school_name": school_name,
         "interviewed_time": interviewed_time, "interview_staff": interview_staff,
         "interview_memo": interview_memo,
         "trial_time": trial_time, "trial_support_staff": trial_support_staff,
