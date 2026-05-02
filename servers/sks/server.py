@@ -2372,6 +2372,88 @@ def sks_cvs_issue_confirm(student_codes: list | None = None, dry_run: bool = Fal
     }, ensure_ascii=False, indent=2)
 
 
+@mcp.tool()
+def sks_student_summary(asofdate: str = "") -> str:
+    """SKS生徒集計一覧(IEB410)を取得する。基準日時点の学年別生徒数を返す。
+
+    画面の「Excel出力」ボタン相当の動作。レスポンスはHTMLテーブル形式の
+    Excel(application/vnd.ms-excel)なので、サーバ側でパースしてJSONで返す。
+
+    Args:
+        asofdate: 基準日 YYYY/MM/DD または YYYYMMDD（空なら今日）
+
+    Returns:
+        {
+          "asofdate": "YYYY/MM/DD",
+          "rows": [
+            {"label": "当月月初生徒数", "by_grade": {"小1": 0, ..., "成人": 0}, "total": 45},
+            {"label": "当月入塾数", ...},
+            {"label": "当月在籍者数", ...},
+            {"label": "当月退塾数", ...},
+            {"label": "翌月月初生徒数", ...},
+          ]
+        }
+    """
+    import datetime as _dt
+
+    if not asofdate:
+        asofdate = _dt.date.today().strftime("%Y/%m/%d")
+    digits = re.sub(r"[^\d]", "", asofdate)
+    if len(digits) != 8:
+        return json.dumps({"error": "asofdate must be YYYY/MM/DD or YYYYMMDD",
+                           "got": asofdate}, ensure_ascii=False)
+    asof_iso = f"{digits[0:4]}/{digits[4:6]}/{digits[6:8]}"
+
+    s = _get_session()
+    # 初期GETでセッション準備
+    s.get(f"{BASE_URL}/service/IEB410.wpp")
+
+    body = {
+        "mode": "excel",
+        "kyoshitsucd": "",
+        "seitocd": "",
+        "asofdate": digits,
+        "gakunen": "",
+        "shubetsu": "",
+    }
+    r = s.post(f"{BASE_URL}/service/IEB410.wpp", data=body)
+    if r.status_code != 200:
+        return json.dumps({"error": f"HTTP {r.status_code}", "asofdate": asof_iso},
+                          ensure_ascii=False)
+
+    html = r.content.decode("utf-8", errors="replace")
+    soup = BeautifulSoup(html, "html.parser")
+
+    table = soup.find("table")
+    if not table:
+        return json.dumps({"error": "table not found", "asofdate": asof_iso,
+                           "preview": html[:200]}, ensure_ascii=False)
+
+    trs = table.find_all("tr")
+    if len(trs) < 2:
+        return json.dumps({"error": "insufficient rows", "asofdate": asof_iso},
+                          ensure_ascii=False)
+
+    header = [c.get_text(strip=True) for c in trs[0].find_all(["th", "td"])]
+    grade_labels = header[1:-1]
+    out_rows = []
+    for tr in trs[1:]:
+        cells = [c.get_text(strip=True) for c in tr.find_all(["th", "td"])]
+        if len(cells) < 2:
+            continue
+        label = cells[0]
+        last = cells[-1]
+        total = int(last) if last.lstrip("-").isdigit() else last
+        by_grade = {}
+        for i, g in enumerate(grade_labels, start=1):
+            v = cells[i] if i < len(cells) else ""
+            by_grade[g] = int(v) if v.lstrip("-").isdigit() else v
+        out_rows.append({"label": label, "by_grade": by_grade, "total": total})
+
+    return json.dumps({"asofdate": asof_iso, "rows": out_rows},
+                      ensure_ascii=False, indent=2)
+
+
 # --- Entry point ---
 if __name__ == "__main__":
     mcp.run()
