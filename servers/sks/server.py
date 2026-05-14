@@ -108,22 +108,9 @@ def _get_session() -> requests.Session:
         _login_failed = True
         raise Exception(f"SKS auth failed: {j2.get('result')}")
 
-    # Step 3: Login with classroom
-    enc_pass2, _ = _cryptojs_aes_encrypt(PASSWORD, com)
-    j3 = _sks_api(s, {
-        "cmd": "login",
-        "kcd": CLASSROOM,
-        "loginid": ACCOUNT,
-        "loginpw": enc_pass2,
-        "tantoshacd": j2.get("tantoshacd", ""),
-        "usersm": j2.get("usersm", ""),
-        "accesslv": j2.get("accesslv", ""),
-    })
-    if j3.get("result") != "OK":
-        _login_failed = True
-        raise Exception(f"SKS login failed: {j3.get('result')}")
-
-    # Step 4: Access service menu to establish session
+    # Step 3: 単一教室アカウントはStep2で `openmain('/service/')` 指示が返るため
+    # cmd=login の追加リクエストは不要。/service/ への直接アクセスでセッション確立する。
+    # 複数教室アカウントの場合は別途 cmd=login で kcd 指定が必要かもしれないが現状未対応。
     r4 = s.get(f"{BASE_URL}/service/")
     if "生徒管理" not in r4.text and "メインメニュー" not in r4.text:
         _login_failed = True
