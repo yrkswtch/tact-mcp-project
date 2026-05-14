@@ -59,8 +59,8 @@ For MCP-compatible agents other than Claude Code, register each server manually:
 ```bash
 # SKS
 claude mcp add sks \
-  -e SKS_BASE_URL=http://tacs.tacsvpn \
-  -e SKS_SSK2_URL=http://ssk2.tacsvpn \
+  -e SKS_BASE_URL=http://sks.example.internal \
+  -e SKS_SSK2_URL=http://sks-ssk2.example.internal \
   -e SKS_ACCOUNT=your_account \
   -e SKS_PASSWORD=your_password \
   -e SKS_CLASSROOM=your_code \

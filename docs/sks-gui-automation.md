@@ -4,7 +4,7 @@ Chrome DevTools MCP等でSKSのブラウザ操作を自動化する際の知見�
 
 ## ログイン
 
-- URL: `http://tacs.tacsvpn/sks.wpp`（デフォルト）
+- URL: `http://sks.example.internal/sks.wpp`（デフォルト）
 - **ログインボタンを押す前に** window.open上書きJSを実行すること
 
 ## window.open上書き（全画面共通）

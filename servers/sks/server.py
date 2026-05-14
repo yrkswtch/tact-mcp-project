@@ -32,7 +32,7 @@ except ImportError:
 mcp = FastMCP("SKS")
 
 # --- Configuration ---
-BASE_URL = os.environ.get("SKS_BASE_URL", "http://tacs.tacsvpn")
+BASE_URL = os.environ.get("SKS_BASE_URL", "http://sks.example.internal")
 ACCOUNT = os.environ.get("SKS_ACCOUNT", "")
 PASSWORD = os.environ.get("SKS_PASSWORD", "")
 CLASSROOM = os.environ.get("SKS_CLASSROOM", "{教室コード}")
@@ -660,7 +660,7 @@ def sks_gaibusei_register(
         guardian_name: 保護者氏名(例: "小川 亮子")。フルネーム必須。
         kana: 生徒フリガナ(全角/半角カタカナ/ひらがな可、自動で半角カナへ変換)。**必須**。
         grade: 学年(例: "中学3年", "高校2年", "小学4年", "成人")。必須。
-        birth: 生年月日(YYYY/MM/DD 例: "2011/10/28")。必須。
+        birth: 生年月日(YYYY/MM/DD 例: "2010/04/15")。必須。
         sex: 性別("女"/"男"/"1"/"0"。1=女, 0=男。空なら男)
         postal_code: 郵便番号(空なら住所から自動逆引き)
         address_city: 住所1 都道府県市区町村(例: "埼玉県{市区名}")
@@ -1177,7 +1177,7 @@ def sks_ryokin_search(
 # PCS Tools
 # =====================
 
-SSK2_URL = os.environ.get("SKS_SSK2_URL", "http://ssk2.tacsvpn")
+SSK2_URL = os.environ.get("SKS_SSK2_URL", "http://sks-ssk2.example.internal")
 _pcs_session_ready: bool = False
 
 
@@ -1600,7 +1600,7 @@ def sks_zip_lookup(address: str) -> str:
     """住所から郵便番号を逆引きする。
 
     Args:
-        address: 住所文字列（例: "埼玉県{市区名}赤井4-25-7"）
+        address: 住所文字列（例: "埼玉県{市区名}○○町1-2-3"）
     """
     zipcode = _lookup_zip(address)
     return json.dumps({"address": address, "postal_code": zipcode}, ensure_ascii=False)

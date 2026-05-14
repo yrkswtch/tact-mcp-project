@@ -7,8 +7,8 @@
   "license": "MIT",
   "keywords": ["school-ie", "cram-school", "student-management", "mcp"],
   "userConfig": {
-    "sks_base_url": { "description": "SKS base URL (default: http://tacs.tacsvpn)", "sensitive": false },
-    "sks_ssk2_url": { "description": "SKS PCS domain URL (default: http://ssk2.tacsvpn)", "sensitive": false },
+    "sks_base_url": { "description": "SKS base URL (default: http://sks.example.internal)", "sensitive": false },
+    "sks_ssk2_url": { "description": "SKS PCS domain URL (default: http://sks-ssk2.example.internal)", "sensitive": false },
     "sks_account": { "description": "SKS login ID (8 digits)", "sensitive": false },
     "sks_password": { "description": "SKS login password", "sensitive": true },
     "sks_classroom": { "description": "Classroom code (4 digits)", "sensitive": false },
