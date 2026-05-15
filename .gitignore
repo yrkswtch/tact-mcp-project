@@ -5,3 +5,8 @@ __pycache__/
 *.env
 .env
 avatar_*.png
+
+# Local scratch / exploration (never push)
+/_*.py
+/data/
+scripts/_*
