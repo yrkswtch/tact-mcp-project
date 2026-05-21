@@ -1854,6 +1854,392 @@ def sks_internal_get_fields(seitocd: str, fields: list | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 受講登録 (授業登録 / IEB020) — GUIなし
+# ---------------------------------------------------------------------------
+#
+# GUIフロー: IEB010「授業登録」ボタン → モーダルiframe(IEB020) で
+#   1. 受講履歴(日付+02:通常授業開始 等)を「追加」
+#      AJAX GET  IEB020.wpp?cmd=ax&param=IF1regist|{生徒}||{入会日}|{日付}|{受講履歴}|
+#   2. コース表が出る(IF2SHOW)。各コードの単価/割引が hidden で埋め込まれる:
+#        TANKA{code}     = 単価(週1回ぶんの基準額)
+#        WGK{n}_{code}   = n回受講時の割引額(累積)
+#        ⇒ 金額 = 単価 × 回数 − WGK{回数}
+#   3. コース名/回数/科目(国数英理社)を入れて「追加／修正」
+#      AJAX GET  IEB020.wpp?cmd=ax&param=IF2ADD|{生徒}|01|{入会日}|{行}
+#        行 = {idx}:{code}:{回数}:{国}:{数}:{英}:{理}:{社}:{金額}
+#
+# 受講(月謝)登録の専用APIは無く上記AJAXを順に叩く。IF2SHOWは常に空フォームを返す
+# (保存済みコースは出ない)ため、二重登録防止に名簿の 科目① を事前チェックする。
+# param中の "01" は対象の受講履歴行番号。新規生徒の最初の1件なら "01"。
+
+_SUBJECT_FLAGS = [  # IF2ADD 行内の順序: 国・数・英・理・社
+    "国", "数", "英", "理", "社",
+]
+_IF_RIREKI_LABEL = {
+    "02": "通常授業開始", "03": "退塾または休塾",
+    "04": "再塾", "05": "コース変更", "06": "選択科目変更",
+}
+
+
+def _student_record(seitocd: str) -> dict | None:
+    """名簿一覧(IEB030)から生徒コード一致のレコードを返す。退塾者も含む。"""
+    s = _get_session()
+    s.get(f"{BASE_URL}/service/IEB030.wpp")
+    r = s.post(f"{BASE_URL}/service/IEB030.wpp", data={
+        "mode": "if", "cols": _COLS_NAIBU, "selseitolist": "",
+        "seitokm": "", "seitosm": "", "seitograde": "",
+        "listcount": "", "seitokb": "naibu",
+    })
+    html = r.content.decode("utf-8", errors="replace")
+    for st in _parse_student_table(html):
+        code = (st.get("生徒ｺｰﾄﾞ") or st.get("生徒コード") or "").strip()
+        if code == str(seitocd):
+            return st
+    return None
+
+
+def _ieb020_fetch_show(s: requests.Session, seitocd: str, nyujukudt: str, tsuban: str = "01") -> str:
+    """IF2SHOW(コース入力フォーム+料金hidden)を取得する。読み取り専用。
+
+    tsuban: 対象の受講履歴通番。コース表の学年は「その通番の履歴行の適用日時点の学年」
+            で決まる。既定 "01" は入会時履歴=入会時学年のコース表になる。
+            学年が進級した既存生のコース変更では、新規履歴行を登録して発番された
+            新通番を渡さないと現学年のコース表・単価が取れない（sks-failures.md 失敗1）。
+    """
+    param = f"IF2SHOW|{seitocd}|{tsuban}|{nyujukudt}"
+    r = s.get(f"{BASE_URL}/service/IEB020.wpp", params={"cmd": "ax", "param": param})
+    return r.content.decode("utf-8", errors="replace")
+
+
+def _ieb020_last_tsuban(s: requests.Session, seitocd: str) -> str:
+    """IF1SHOW(受講履歴一覧)から最新の通番(lasttsuban, 2桁文字列)を返す。履歴なしは ''。"""
+    r = s.get(f"{BASE_URL}/service/IEB020.wpp", params={"cmd": "ax", "param": f"IF1SHOW|{seitocd}"})
+    html = r.content.decode("utf-8", errors="replace")
+    m = re.findall(r"lasttsuban='(\d+)'", html)
+    return m[-1] if m else ""
+
+
+def _ieb020_add_history(s: requests.Session, seitocd: str, lasttsuban: str,
+                        nyujukudt: str, sd_compact: str, rireki: str) -> str:
+    """受講履歴行を登録(IF1regist)し、発番された新通番(2桁文字列)を返す。⚠サーバ永続化。
+
+    新通番は IF1regist レスポンス末尾の lasttsuban='NN' から取得する
+    （既存最大通番 +1 で発番される）。
+    """
+    param = f"IF1regist|{seitocd}|{lasttsuban}|{nyujukudt}|{sd_compact}|{rireki}|"
+    r = s.get(f"{BASE_URL}/service/IEB020.wpp", params={"cmd": "ax", "param": param})
+    html = r.content.decode("utf-8", errors="replace")
+    m = re.findall(r"lasttsuban='(\d+)'", html)
+    return m[-1] if m else ""
+
+
+def _course_grade_suffix(courses: list) -> str:
+    """コース表の代表コース名から学年サフィックス(小6/中3/高2等)を推定する。"""
+    for c in courses:
+        mm = re.search(r"(小[1-6]|中[1-3]|高[1-3])$", c["name"].rstrip())
+        if mm:
+            return mm.group(1)
+    return ""
+
+
+def _ieb020_parse_pricing(html: str):
+    """IF2SHOW HTMLから (courses, tanka, wgk) を解析する。
+      courses: [{"code": "12100", "name": "PS2･中3"}, ...]
+      tanka:   {code: 単価(int)}
+      wgk:     {code: {回数(int): 割引額(int)}}
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    courses = []
+    sel = soup.find("select", attrs={"name": "if2CS_0"})
+    if sel:
+        for opt in sel.find_all("option"):
+            v = (opt.get("value") or "").strip()
+            if not v:
+                continue
+            txt = opt.get_text(strip=True)
+            if "：" in txt:
+                name = txt.split("：", 1)[1]
+            elif ":" in txt:
+                name = txt.split(":", 1)[1]
+            else:
+                name = txt
+            courses.append({"code": v, "name": name})
+    tanka = {
+        m.group(1): int(m.group(2))
+        for m in re.finditer(r"name='TANKA(\d+)'[^>]*?value='(\d+)'", html)
+    }
+    wgk: dict[str, dict[int, int]] = {}
+    for m in re.finditer(r"name='WGK(\d+)_(\d+)'[^>]*?value='(\d+)'", html):
+        n, code, val = int(m.group(1)), m.group(2), int(m.group(3))
+        wgk.setdefault(code, {})[n] = val
+    return courses, tanka, wgk
+
+
+def _compute_kingaku(code: str, kaisu: int, tanka: dict, wgk: dict) -> int | None:
+    """金額 = 単価×回数 − WGK{回数}"""
+    if code not in tanka:
+        return None
+    return tanka[code] * kaisu - wgk.get(code, {}).get(kaisu, 0)
+
+
+def _auto_ps2_course(courses: list, grade: str) -> str | None:
+    """学年に対応するPS2標準コースのコードを自動特定する。"""
+    cands = [
+        c for c in courses
+        if c["name"].startswith("PS2")
+        and c["name"].rstrip().endswith(grade)
+        and not any(x in c["name"] for x in ("追加", "同時", "ﾒｲﾄ", ">"))
+    ]
+    return cands[0]["code"] if cands else None
+
+
+@mcp.tool()
+def sks_jugyo_show(seitocd: str) -> str:
+    """SKS内部生の受講(コース)情報と、選択可能なコース・料金を取得する（読み取り専用）。
+
+    現在の受講状況(名簿の コース①②③/科目/回数/金額)と、その生徒の学年で選べる
+    コース一覧(コード:名称・単価)を返す。受講登録の事前確認に使う。
+
+    Args:
+        seitocd: 生徒コード（例: "260007"）
+    """
+    s = _get_session()
+    rec = _student_record(seitocd)
+    if rec is None:
+        return json.dumps({"result": "NG", "error": f"生徒コード {seitocd} が名簿に見つかりません"},
+                          ensure_ascii=False, indent=2)
+    data, _ = _ieb010_load(seitocd)
+    nyujukudt = (data or {}).get("nyujukudt", "")
+
+    current = {}
+    for i in ("①", "②", "③"):
+        if (rec.get(f"科目{i}", "") or "").strip():
+            current[i] = {
+                "コース名": rec.get(f"ｺｰｽ名{i}", ""),
+                "科目": rec.get(f"科目{i}", ""),
+                "回数": rec.get(f"回数{i}", ""),
+                "金額": rec.get(f"金額{i}", ""),
+            }
+
+    course_list = []
+    if re.match(r"^\d{8}$", nyujukudt):
+        courses, tanka, _wgk = _ieb020_parse_pricing(_ieb020_fetch_show(s, seitocd, nyujukudt))
+        course_list = [
+            {"code": c["code"], "name": c["name"], "単価": tanka.get(c["code"])}
+            for c in courses
+        ]
+
+    return json.dumps({
+        "result": "OK",
+        "seitocd": seitocd,
+        "氏名": rec.get("生徒氏名", ""),
+        "学年": rec.get("学年", ""),
+        "入会日": nyujukudt,
+        "現在の受講": current or "(未登録)",
+        "選択可能コース": course_list,
+        "_金額式": "金額 = 単価×回数 − 割引(WGK)",
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_jugyo_register(
+    seitocd: str,
+    subjects: str,
+    kaisu: int | None = None,
+    course_code: str = "",
+    start_date: str = "",
+    rireki: str = "02",
+    dry_run: bool = True,
+    allow_existing: bool = False,
+) -> str:
+    """SKS内部生の受講(月謝コース)を登録する。GUIの「授業登録」相当。
+
+    受講履歴(通常授業開始 等)を追加し、コース情報(コース名/回数/科目)を登録する。
+    金額は 単価×回数−割引 で自動算出する。
+    学年が進級した既存生のコース変更(rireki=05)は、履歴行を先に登録して新通番を発番させ、
+    その新通番のコース表から現学年の単価を取得して算出する(詳細: docs/sks-failures.md 失敗1)。
+
+    ⚠ 月謝が発生する不可逆操作。デフォルト dry_run=True では登録内容を返すだけで
+       書き込まない。実際に登録するには dry_run=False を明示すること。
+
+    Args:
+        seitocd: 生徒コード（例: "260007"）
+        subjects: 受講科目。国数英理社の文字列（例: "数", "数英", "国数英"）
+        kaisu: 週回数。省略時は科目数（数英なら2）
+        course_code: コースコード（例: "12100"）。空なら現学年からPS2標準コースを自動選択。
+                     dry_run時は入会時学年のコース表しか読めず、進級済み生は自動特定できない
+                     ことがある（その場合は course_code を指定するか dry_run=False で実行）
+        start_date: 授業開始日 YYYY/MM/DD。空なら今日
+        rireki: 受講履歴コード（02:通常授業開始 / 04:再塾 / 05:コース変更 / 06:選択科目変更）
+        dry_run: True(既定)=登録内容を返すだけ。False=実際に登録
+        allow_existing: True=既に科目①が登録済みでも続行（再登録/変更時）
+    """
+    s = _get_session()
+    rec = _student_record(seitocd)
+    if rec is None:
+        return json.dumps({"result": "NG", "error": f"生徒コード {seitocd} が名簿に見つかりません"},
+                          ensure_ascii=False, indent=2)
+    grade = (rec.get("学年", "") or "").strip()
+    existing = (rec.get("科目①", "") or "").strip()
+    if existing and not allow_existing:
+        return json.dumps({
+            "result": "NG",
+            "error": (f"既に受講登録済み（コース①={rec.get('ｺｰｽ名①','')} 科目①={existing} "
+                      f"回数①={rec.get('回数①','')} 金額①={rec.get('金額①','')}）。"
+                      "再登録/変更する場合は allow_existing=True を指定してください。"),
+            "seitocd": seitocd,
+        }, ensure_ascii=False, indent=2)
+
+    # 入会日(契約日)
+    data, _ = _ieb010_load(seitocd)
+    nyujukudt = (data or {}).get("nyujukudt", "")
+    if not re.match(r"^\d{8}$", nyujukudt):
+        return json.dumps({"result": "NG", "error": f"入会日(nyujukudt)を取得できません: {nyujukudt!r}"},
+                          ensure_ascii=False, indent=2)
+
+    # 科目フラグ（国数英理社の順）
+    sel_names = [ch for ch in _SUBJECT_FLAGS if ch in subjects]
+    if not sel_names:
+        return json.dumps({"result": "NG", "error": f"科目が未指定です（国数英理社のいずれか）: {subjects!r}"},
+                          ensure_ascii=False, indent=2)
+    flags = ["1" if ch in subjects else "0" for ch in _SUBJECT_FLAGS]
+    if kaisu is None:
+        kaisu = len(sel_names)
+
+    # 日付
+    sd = (start_date or "").strip() or datetime.now().strftime("%Y/%m/%d")
+    sd_compact = sd.replace("/", "").replace("-", "")
+    if not re.match(r"^\d{8}$", sd_compact):
+        return json.dumps({"result": "NG", "error": f"start_date 形式が不正: {start_date!r}（YYYY/MM/DD）"},
+                          ensure_ascii=False, indent=2)
+
+    # コース表(IF2SHOW)の学年は「対象通番の適用日時点の学年」で決まる。通番01(入会時)を
+    # 読むと入会時学年になるため、進級済み生のコース変更では新通番が必要(sks-failures.md 失敗1)。
+    # 新通番は履歴行を登録(IF1regist)しないと発番されない＝永続化が伴うため、
+    #   dry_run: 入会時通番のコース表で参考値を出し、現学年と異なれば警告(正確値は実行時確定)
+    #   実登録 : 履歴行を登録→新通番→新通番のIF2SHOW(現学年)で単価取得→IF2ADD
+    last_tsuban = _ieb020_last_tsuban(s, seitocd)
+
+    if dry_run:
+        courses, tanka, wgk = _ieb020_parse_pricing(_ieb020_fetch_show(s, seitocd, nyujukudt, "01"))
+        if not courses:
+            return json.dumps({"result": "NG", "error": "コース選択肢を取得できません（IF2SHOW解析失敗）"},
+                              ensure_ascii=False, indent=2)
+        ref_grade = _course_grade_suffix(courses)
+        cc = course_code or (_auto_ps2_course(courses, grade) or "")
+        cname = next((c["name"] for c in courses if c["code"] == cc), cc)
+        kingaku = _compute_kingaku(cc, kaisu, tanka, wgk) if cc else None
+        next_tsuban = f"{int(last_tsuban)+1:02d}" if last_tsuban.isdigit() else "01"
+        plan = {
+            "result": "DRY_RUN",
+            "seitocd": seitocd,
+            "氏名": rec.get("生徒氏名", ""),
+            "学年": grade,
+            "受講履歴": f"{rireki}:{_IF_RIREKI_LABEL.get(rireki, '')}",
+            "授業開始日": sd,
+            "コース": f"{cc}：{cname}" if cc else "(実行時に現学年で特定)",
+            "回数": kaisu,
+            "科目": "".join(sel_names),
+            "見込み新通番": next_tsuban,
+            "note": "dry_run=True のため未登録。実行するには dry_run=False を指定してください。",
+        }
+        if ref_grade and ref_grade != grade:
+            # 進級済み生: 入会時通番では現学年の単価が取れない
+            plan["金額"] = None
+            msg = (f"現学年は{grade}だが、入会時通番(01)のコース表は{ref_grade}基準のため正確な単価を"
+                   f"取得できない。dry_run=Falseで実行すると、履歴行を登録→新通番→現学年({grade})の"
+                   f"コース表から単価を取得して金額を算出する。")
+            msg += (f" 参考(入会時{ref_grade}基準): {kingaku:,}円" if kingaku is not None
+                    else " ※course_code未指定かつ入会時学年で自動特定不可。course_codeを指定するか実行時に現学年で特定。")
+            plan["warning"] = msg
+        else:
+            if not cc:
+                return json.dumps({
+                    "result": "NG",
+                    "error": f"PS2標準コースを自動特定できません（学年={grade}）。course_code を指定してください。",
+                    "available_courses": courses,
+                }, ensure_ascii=False, indent=2)
+            if kingaku is None:
+                return json.dumps({
+                    "result": "NG", "error": f"コース {cc} の単価が見つかりません",
+                    "available_courses": courses,
+                }, ensure_ascii=False, indent=2)
+            plan["金額"] = kingaku
+        return json.dumps(plan, ensure_ascii=False, indent=2)
+
+    # --- 実登録（新通番フロー）---
+    # 1) 受講履歴行を登録 → 新通番を発番（⚠永続化）
+    new_tsuban = _ieb020_add_history(s, seitocd, last_tsuban, nyujukudt, sd_compact, rireki)
+    if not new_tsuban or new_tsuban == last_tsuban:
+        return json.dumps({
+            "result": "NG",
+            "error": f"受講履歴の登録に失敗（新通番が発番されませんでした）。last={last_tsuban!r} new={new_tsuban!r}",
+            "seitocd": seitocd,
+        }, ensure_ascii=False, indent=2)
+
+    # 2) 新通番でコース表(現学年)を取得
+    courses, tanka, wgk = _ieb020_parse_pricing(_ieb020_fetch_show(s, seitocd, nyujukudt, new_tsuban))
+    if not courses:
+        return json.dumps({
+            "result": "NG",
+            "error": (f"新通番{new_tsuban}でコース表を取得できません（IF2SHOW解析失敗）。"
+                      "履歴行は登録済みのためGUIで確認してください。"),
+            "new_tsuban": new_tsuban,
+        }, ensure_ascii=False, indent=2)
+    if not course_code:
+        course_code = _auto_ps2_course(courses, grade) or ""
+        if not course_code:
+            return json.dumps({
+                "result": "NG",
+                "error": (f"PS2標準コースを自動特定できません（学年={grade}）。course_code を指定して"
+                          "再実行してください（履歴行は登録済みのため、再実行時は同一通番にコースが入ります）。"),
+                "available_courses": courses,
+                "new_tsuban": new_tsuban,
+            }, ensure_ascii=False, indent=2)
+    course_name = next((c["name"] for c in courses if c["code"] == course_code), course_code)
+    kingaku = _compute_kingaku(course_code, kaisu, tanka, wgk)
+    if kingaku is None:
+        return json.dumps({
+            "result": "NG", "error": f"コース {course_code} の単価が見つかりません",
+            "available_courses": courses, "new_tsuban": new_tsuban,
+        }, ensure_ascii=False, indent=2)
+
+    # 3) コース確定
+    row = f"0:{course_code}:{kaisu}:{':'.join(flags)}:{kingaku}"
+    if2_param = f"IF2ADD|{seitocd}|{new_tsuban}|{nyujukudt}|{row}"
+    r2 = s.get(f"{BASE_URL}/service/IEB020.wpp", params={"cmd": "ax", "param": if2_param})
+
+    # 検証: 名簿で 科目①/金額① が反映されたか
+    rec2 = _student_record(seitocd) or {}
+    saved = {
+        "ｺｰｽ名①": rec2.get("ｺｰｽ名①", ""),
+        "科目①": rec2.get("科目①", ""),
+        "回数①": rec2.get("回数①", ""),
+        "金額①": rec2.get("金額①", ""),
+        "授業開始日": rec2.get("授業開始日", ""),
+    }
+    ok = bool(saved["科目①"].strip()) and bool(saved["金額①"].strip())
+    plan = {
+        "result": "OK" if ok else "UNCERTAIN",
+        "seitocd": seitocd,
+        "氏名": rec.get("生徒氏名", ""),
+        "学年": grade,
+        "受講履歴": f"{rireki}:{_IF_RIREKI_LABEL.get(rireki, '')}",
+        "授業開始日": sd,
+        "コース": f"{course_code}：{course_name}",
+        "回数": kaisu,
+        "科目": "".join(sel_names),
+        "金額": kingaku,
+        "new_tsuban": new_tsuban,
+        "saved": saved,
+        "if2_status": r2.status_code,
+    }
+    if not ok:
+        plan["warning"] = "登録後の名簿に科目①/金額①が反映されていません。手動で確認してください。"
+    return json.dumps(plan, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # 外部生 → 内部生 取り込み
 # ---------------------------------------------------------------------------
 #

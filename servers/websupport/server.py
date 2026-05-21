@@ -542,7 +542,16 @@ def sfm_student_detail(sid: str) -> str:
         cells = tr.find_all(["th", "td"])
         if len(cells) == 2:
             key = cells[0].get_text(strip=True)
-            val = cells[1].get_text(strip=True)
+            val_cell = cells[1]
+            # input[value] / textarea を優先的に読む (フォーム値)
+            inp = val_cell.find(["input", "textarea"])
+            if inp is not None:
+                if inp.name == "textarea":
+                    val = inp.get_text(strip=True)
+                else:
+                    val = (inp.get("value") or "").strip()
+            else:
+                val = val_cell.get_text(strip=True)
             if key:
                 data[key] = val
 
