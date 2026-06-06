@@ -134,8 +134,8 @@ def main() -> None:
     ap.add_argument("--targets-file", help="apply 時に dry-run の結果 JSON を再利用")
     args = ap.parse_args()
 
-    out_dir = ROOT / "data"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = Path(os.path.expanduser("~")) / ".tact-mcp" / "sks_data"
+    out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if args.mode == "dry-run":

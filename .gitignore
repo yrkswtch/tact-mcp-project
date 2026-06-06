@@ -7,6 +7,10 @@ __pycache__/
 avatar_*.png
 
 # Local scratch / exploration (never push)
+# 教室固有の秘匿情報・データ・一時ファイルはプロジェクト配下に置かない。
+# 正規の置き場は ~/.tact-mcp/ (sks.env / sks_data / scratch)。
 /_*.py
 /data/
+/sks_data/
+/scratch/
 scripts/_*

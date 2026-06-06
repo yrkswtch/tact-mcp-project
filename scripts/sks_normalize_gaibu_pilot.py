@@ -27,8 +27,8 @@ def main() -> None:
     for s in targets:
         print(f"  {s['生徒ｺｰﾄﾞ']} | {s['生徒氏名']:18} | 学年:{s['学年']} | 生年月日:{s['生年月日']}")
 
-    out_dir = ROOT / "data"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = Path(os.path.expanduser("~")) / ".tact-mcp" / "sks_data"
+    out_dir.mkdir(parents=True, exist_ok=True)
     log_path = out_dir / f"normalize_gaibu_pilot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     log = {"started_at": datetime.now().isoformat(), "items": []}
 
