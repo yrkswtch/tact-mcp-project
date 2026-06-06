@@ -31,6 +31,26 @@ except ImportError:
 
 mcp = FastMCP("SKS")
 
+
+# --- 外部ENVファイルから秘匿設定を読み込む（リポジトリに実値を置かない） ---
+def _load_env_file() -> None:
+    """環境変数 SKS_ENV_FILE が指す .env から設定を補完する。
+    教室コード等の教室固有値・認証情報は、このリポジトリ外のファイルに置く。
+    既存の環境変数は上書きしない（呼び出し側の指定を優先）。"""
+    path = os.environ.get("SKS_ENV_FILE", "")
+    if not path or not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_env_file()
+
 # --- Configuration ---
 BASE_URL = os.environ.get("SKS_BASE_URL", "http://sks.example.internal")
 ACCOUNT = os.environ.get("SKS_ACCOUNT", "")
@@ -563,7 +583,7 @@ def sks_inquiry_register(
     data = {
         "cmd": "post",
         "kyoshitsucd": CLASSROOM,
-        "kyoshitsusm": "{教室名}",
+        "kyoshitsusm": os.environ.get("SKS_CLASSROOM_NAME", ""),
         "number": "",
         "toiawasedt": inquiry_date.replace("/", ""),
         "imtoiawasedt": inquiry_date,
@@ -607,6 +627,11 @@ def sks_inquiry_register(
     check_html = r_check.content.decode("utf-8", errors="replace")
     found = student_name.replace(" ", "") in check_html.replace("　", "").replace(" ", "")
 
+    # 診断用: 登録POSTのサーバー応答テキスト(タグ除去・先頭300字)
+    try:
+        resp_text = BeautifulSoup(r.content.decode("utf-8", errors="replace"), "html.parser").get_text(" ", strip=True)[:300]
+    except Exception:
+        resp_text = ""
     return json.dumps({
         "result": "OK" if found else "UNCERTAIN",
         "student_name": student_name,
@@ -614,6 +639,10 @@ def sks_inquiry_register(
         "postal_code": postal_code,
         "phone": phone,
         "verified": found,
+        "sent_grade": grade_val,
+        "sent_schoolkb": schoolkb,
+        "post_status": r.status_code,
+        "server_response": resp_text,
     }, ensure_ascii=False, indent=2)
 
 
@@ -623,7 +652,7 @@ def sks_gaibusei_register(
     guardian_name: str,
     kana: str,
     grade: str,
-    birth: str,
+    birth: str = "",
     sex: str = "",
     postal_code: str = "",
     address_city: str = "",
@@ -639,15 +668,17 @@ def sks_gaibusei_register(
 ) -> str:
     """SKS外部生登録(IEB040)に新規登録する(講習会生/ETS体験生)。
 
-    必須フィールド: student_name, guardian_name, kana, grade, birth。
+    必須フィールド: student_name, guardian_name, kana, grade。
     特に kana(フリガナ)は **サーバー側で必須バリデーションあり**。空だと登録失敗する。
+    性別(sex)も実質必須だが空なら男(0)で送る。生年月日(birth)は IEB040 側では
+    必須ではなく**任意**(空ならそのまま空で登録)。
 
     Args:
         student_name: 生徒氏名(例: "小川 夢禾")。必須。
         guardian_name: 保護者氏名(例: "小川 亮子")。フルネーム必須。
         kana: 生徒フリガナ(全角/半角カタカナ/ひらがな可、自動で半角カナへ変換)。**必須**。
         grade: 学年(例: "中学3年", "高校2年", "小学4年", "成人")。必須。
-        birth: 生年月日(YYYY/MM/DD 例: "2010/04/15")。必須。
+        birth: 生年月日(YYYY/MM/DD 例: "2010/04/15")。任意(空可)。
         sex: 性別("女"/"男"/"1"/"0"。1=女, 0=男。空なら男)
         postal_code: 郵便番号(空なら住所から自動逆引き)
         address_city: 住所1 都道府県市区町村(例: "埼玉県{市区名}")
@@ -688,15 +719,17 @@ def sks_gaibusei_register(
         }, ensure_ascii=False)
     grade_code = _GRADE_TO_GAIBUSEI_CODE[grade_key]
 
-    # 生年月日
-    try:
-        datetime.strptime(birth, "%Y/%m/%d")
-    except ValueError:
-        return json.dumps({
-            "result": "NG", "error": f"invalid birth format: {birth}",
-            "hint": "YYYY/MM/DD"
-        }, ensure_ascii=False)
-    datebirth = birth.replace("/", "")
+    # 生年月日(任意。IEB040 はフリガナのみ必須で生年月日は必須ではない。空ならスキップ)
+    birth = (birth or "").strip()
+    if birth:
+        try:
+            datetime.strptime(birth, "%Y/%m/%d")
+        except ValueError:
+            return json.dumps({
+                "result": "NG", "error": f"invalid birth format: {birth}",
+                "hint": "YYYY/MM/DD"
+            }, ensure_ascii=False)
+    datebirth = birth.replace("/", "") if birth else ""
 
     # 電話番号整形
     phone_fmt = _format_phone(phone) if phone else ""
@@ -786,7 +819,7 @@ def sks_gaibusei_register(
 def sks_gaibusei_register_from_inquiry(
     inquiry_no: str,
     kana: str,
-    birth: str,
+    birth: str = "",
     sex: str = "",
     memo: str = "",
     emergency_phone: str = "",
@@ -799,13 +832,13 @@ def sks_gaibusei_register_from_inquiry(
     生徒氏名・保護者氏名・学年・住所・電話番号は問合せから自動転記される。
     フリガナ・性別・生年月日・備考だけ補完する。
 
-    必須: kana(フリガナ) と birth(生年月日)。kana が空だとサーバー側
-    バリデーションで弾かれて UNCERTAIN になる。
+    必須: kana(フリガナ)。kana が空だとサーバー側バリデーションで弾かれて
+    UNCERTAIN になる。生年月日(birth)は IEB040 側では必須ではなく**任意**(空可)。
 
     Args:
         inquiry_no: SKS問合せNO(例: "1184")
         kana: 生徒フリガナ(全角/半角カナ/ひらがな可)。**必須**。
-        birth: 生年月日(YYYY/MM/DD)。必須。
+        birth: 生年月日(YYYY/MM/DD)。任意(空可)。
         sex: 性別("女"/"男"/"1"/"0"。空なら男)
         memo: 備考(転記先に残る)
         emergency_phone: 緊急連絡先TEL
@@ -827,11 +860,13 @@ def sks_gaibusei_register_from_inquiry(
     sex_code = sex_map.get(sex, "0")
     kana_half = _kana_to_halfwidth(kana) if kana else ""
 
-    # 生年月日バリデーション
-    try:
-        datetime.strptime(birth, "%Y/%m/%d")
-    except ValueError:
-        return json.dumps({"result": "NG", "error": f"invalid birth: {birth}"}, ensure_ascii=False)
+    # 生年月日(任意。IEB040 はフリガナのみ必須。空ならスキップ)
+    birth = (birth or "").strip()
+    if birth:
+        try:
+            datetime.strptime(birth, "%Y/%m/%d")
+        except ValueError:
+            return json.dumps({"result": "NG", "error": f"invalid birth: {birth}"}, ensure_ascii=False)
 
     # 問合せから外部生登録画面へ転送: 問合せ管理→選択と同じGET
     # GET /service/IEB040.wpp?mode=toiawase&kyoshitsucd={CLASSROOM}&gaibuseicd=&gaibuseikb=&seitocd={CLASSROOM}:{inquiry_no}
@@ -1300,6 +1335,75 @@ def pcs_print_kaitou(student_code: str, kyoukakb: str = "2") -> str:
         "path": pdf_path,
         "size": len(r.content),
         "pages": pages,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def pcs_print_result(student_code: str, kyoukakb: str = "2",
+                     score_flag: str = "1", bg_flag: str = "1") -> str:
+    """PCSの結果帳票PDF（系統図形式 ○△×）をダウンロードして保存する。
+
+    採点済みでないと結果帳票は出力できない（GET/POST・状態変化なし）。
+    フロー: PcsPrintResult2.do?flg=1（選択画面・実施回数取得）
+          → PcsPrintResult2.do?cmd=print&jisshikaisu=..（dlForm取得）
+          → PcsPrintDownload.do に dlForm を POST（PDF本体）
+
+    Args:
+        student_code: 生徒番号（例: "260007"）
+        kyoukakb: 教科コード（2=算数・数学, 3=英語）
+        score_flag: 得点表示 1=あり / 0=なし（初回Iテストは表示されない）
+        bg_flag: 1=A3白紙にグラフィック印刷 / 0=文字のみ（専用用紙向け）
+    """
+    s = _get_session()
+    _pcs_establish_session(s, student_code, kyoukakb)
+
+    # ① 選択画面（印刷コンテキスト確立＋実施回数の取得）
+    sel = s.get(f"{SSK2_URL}/pcs/PcsPrintResult2.do?flg=1")
+    soup = BeautifulSoup(sel.text, "html.parser")
+    fm = soup.find("form", {"name": "formmain"})
+    if not fm or "結果帳票" not in sel.text:
+        return json.dumps({"result": "NO_FORM", "snippet": sel.text[:300]},
+                          ensure_ascii=False)
+    js_inp = fm.find("input", {"name": "jisshikaisu"})
+    jisshikaisu = (js_inp.get("value") if js_inp else "") or "1"
+
+    # ② cmd=print → ダウンロードフォーム(dlForm)を受け取る
+    q = (f"cmd=print&jisshikaisu={jisshikaisu}&compTestFlag=0"
+         f"&scoreFlag={score_flag}&kaisu=&bgFlag={bg_flag}")
+    r = s.get(f"{SSK2_URL}/pcs/PcsPrintResult2.do?{q}")
+    dl = BeautifulSoup(r.text, "html.parser").find("form", {"name": "dlForm"})
+    if not dl:
+        reason = "出力できませんでした（採点未済の可能性）" \
+            if "出力できませんでした" in r.text else r.text[:200]
+        return json.dumps({"result": "NOT_AVAILABLE", "reason": reason,
+                           "jisshikaisu": jisshikaisu}, ensure_ascii=False)
+
+    # ③ PcsPrintDownload.do に POST → PDF本体
+    action = dl.get("action")
+    data = {i.get("name"): i.get("value", "") for i in dl.find_all("input") if i.get("name")}
+    pdf = s.post(f"{SSK2_URL}/pcs/{action}", data=data)
+    if pdf.content[:4] != b"%PDF":
+        return json.dumps({"result": "NOT_PDF",
+                           "content_type": pdf.headers.get("Content-Type", ""),
+                           "size": len(pdf.content)}, ensure_ascii=False)
+
+    pdf_dir = os.path.join(os.path.expanduser("~"), "Documents", "pcs_pdf")
+    os.makedirs(pdf_dir, exist_ok=True)
+    filename = f"kekka_{student_code}_kk{kyoukakb}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    pdf_path = os.path.join(pdf_dir, filename)
+    with open(pdf_path, "wb") as f:
+        f.write(pdf.content)
+
+    pages = 0
+    try:
+        from PyPDF2 import PdfReader
+        pages = len(PdfReader(pdf_path).pages)
+    except Exception:
+        pass
+
+    return json.dumps({
+        "result": "OK", "path": pdf_path, "size": len(pdf.content),
+        "pages": pages, "jisshikaisu": jisshikaisu,
     }, ensure_ascii=False, indent=2)
 
 
