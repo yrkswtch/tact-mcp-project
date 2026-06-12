@@ -2126,14 +2126,48 @@ WN請求締処理の後に実行する必要がある。
 | 調整区分 | ラジオ | **次回カード/WN反映**(default) / 振込 |
 | 返金理由 | プルダウン | 退塾 / 休塾 / コース変更 / 週回数変更 / 請求間違い |
 
-### 料金科目（13項目、全てテキスト入力）
-IE授業料 / IE入会金 / IE維持管理費 / IE基礎教材費 / IE別途教材費 / IEテスト費 / IEその他 / IE春期講習会費 / IE夏期講習会費 / IE冬期講習会費 / IE講習会費(テキスト代) / IE講習会費OP(テスト費) / IE講習会費OP(ファイル代) / 合計(readonly)
+### 料金科目（13項目、全てテキスト入力 `KINGAKU_<コード>`）
+| コード | 科目 | コード | 科目 |
+|---|---|---|---|
+| `KINGAKU_10` | IE授業料 | `KINGAKU_70` | IEその他 |
+| `KINGAKU_20` | IE入会金 | `KINGAKU_81/82/83` | 春期/夏期/冬期講習会費 |
+| `KINGAKU_30` | IE維持管理費 | `KINGAKU_91` | 講習会費(テキスト代) |
+| `KINGAKU_40` | IE基礎教材費 | `KINGAKU_92` | 講習会費OP(テスト費) |
+| `KINGAKU_50` | IE別途教材費 | `KINGAKU_93` | 講習会費OP(ファイル代) |
+| `KINGAKU_60` | IEテスト費 | 合計 | `choseisum`/`gokei`(readonly, `onchange=calc()`) |
 
 ### アクションボタン
-確定(disabled) / 削除(disabled) / クリア / 終了
+確定 `bnregist`(=`dopost()`) / 削除 `sakujobtn`(=`dodelete()`) / クリア / 終了
+ロード直後は forinit が削除を disabled、確定を enabled にする。
+
+### 生徒ロードと処理年月（重要）
+- 生徒ロードは **`formmain` を POST**（GUI の `doreload()` 相当）。`seitocd`, `seitoshubetsu`(0内部/1外部), `mode=""` を入れる。
+- **調整区分 `choseikb` が処理年月(`shoriym`)を決める**：
+  - `choseikb=0`（次回カード/WN反映）→ 処理年月 = `wnym`（翌WN月。画面JSの `wnym` 変数）
+  - `choseikb=1`（振込）→ 処理年月 = `frym`（当月。画面JSの `frym` 変数）
+- `frym`/`wnym` はロード後HTMLの JS（`frym = '202606'` 等）から取得できる。
+- **既存の振込調整を「削除モード」で展開**するには、`formmain.choseikb=1` かつ `shoriym=YYYY/MM(=frym)` で再ロードする。サーバが該当処理年月の既存調整を `fmpost`（`KINGAKU_*`, `imhenkinriyudt`, 口座, `var stat_prev="0|1"`）に展開し、`sakujobtn` が有効化される。単純な表示（`choseikb=0`）では既存調整は出ず削除不可。
+
+### 登録 POST（`fmpost`, `mode=regist`）— `dopost_confirm()` 相当
+- 主要フィールド: `mode=regist`, `seitocd`, `seitoshubetsu`, `choseikeitai`(0返金/1追加徴収), `choseikb`(0/1), `shoriym`(YYYYMM, スラッシュ除去), `hikiotoshiym`(YYYYMM), `KINGAKU_*`, `choseisum`/`gokei`, `henkinriyu`(退塾/休塾/コース変更/週回数変更/請求間違い), `imhenkinriyudt`(YYYY/MM/DD)+`henkinriyudt`(YYYYMMDD), `tesuryokb`(1先方/0当方)。
+- 振込返金は口座(`zengincd`/`ginkosm`/`shitensm`/`kozashubetsu`/`kozano`/`meiginin`)が生徒の登録口座から自動展開される。
+- 返金時 `henkinriyudt`(返金理由日)は必須。成功応答に「登録しました」。
+- GUI注意: **調整区分ラジオを押すと入力済み金額・日付がクリアされる**（区分を先に決めてから入力）。
+
+### 削除 POST（`fmpost`, `mode=delete`）— `dodelete()` 相当
+- `mode=delete`, `seitocd`, `seitoshubetsu`, `choseikeitai`(=既存調整の種別=`stat_prev`), `choseikb`, `shoriym`(YYYYMM), 日付各種(スラッシュ除去) を入れて `fmpost` を POST。金額は不要（既存調整を処理年月で特定）。
+
+### 計上月の注意
+- 画面の処理年月表示と、調整一覧 IEB280 の絞り込み月は一致しないことがある。**振込調整は frym（当月）に計上**され、IEB280 はその月で確認する。検証は IEB280（処理年月＝当月・生徒区分）でマイナス額・合計を確認。
+
+### MCP ツール
+- `sks_chousei_get(seitocd, choseikb)` — 既存調整の確認（読み取り）
+- `sks_chousei_register(seitocd, kingaku, henkin_riyu, henkin_riyudt, choseikb, tesuryo_futan, confirm)` — 返金登録（`confirm=True` 必須）
+- `sks_chousei_delete(seitocd, choseikb, confirm)` — 既存調整の削除（`confirm=True` 必須、削除後に再ロード検証）
+- 実装: `servers/sks/server.py`。詳細手順は `docs/sks-gui-automation.md`。
 
 ### 備考
-カード返金は過去にカード請求実績が必要。
+カード返金は過去にカード請求実績が必要。退塾者は今後のWN引落が無いため振込返金が基本。
 
 ## 未収金内訳明細 (`/service/IEB220.wpp`)
 

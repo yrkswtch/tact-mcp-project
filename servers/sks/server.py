@@ -2931,6 +2931,314 @@ def sks_student_summary(asofdate: str = "") -> str:
                       ensure_ascii=False, indent=2)
 
 
+# ===========================================================================
+# IEB240 調整入力（返金・追加徴収）
+# ===========================================================================
+# GUIの doreload / dopost_confirm / dodelete を HTTP で再現する。
+#
+# 重要な挙動（2026-06 実機調査）:
+#  - 調整区分 choseikb: "0"=次回カード/WN反映(処理年月=wnym=翌WN月) /
+#    "1"=振込(処理年月=frym=当月)。
+#  - 生徒ロードは formmain を POST（doreload 相当）。formmain.choseikb の値で
+#    処理年月が切り替わる。choseikb="1"(振込) で再ロードすると、サーバが該当
+#    処理年月(frym)の既存振込調整を fmpost に展開し、削除モードになる。
+#  - 登録は fmpost に mode="regist"、削除は mode="delete" を入れて fmpost を POST。
+#  - 振込返金の口座情報は生徒の登録口座が自動展開される。
+#  - 返金理由日(henkinriyudt)は返金時必須。POST 時は日付のスラッシュを除去
+#    (YYYY/MM/DD→YYYYMMDD, YYYY/MM→YYYYMM)。
+#  - 注意: ログインパスワードの AES 暗号化やセッションは _get_session() を共用。
+#    GUIブラウザのセッションを注入しない（別セッションで独立動作させる）。
+
+_CHOSEI_KINGAKU = {
+    "10": "授業料", "20": "入会金", "30": "維持管理費", "40": "基礎教材費",
+    "50": "別途教材費", "60": "テスト費", "70": "その他",
+    "81": "春期講習会費", "82": "夏期講習会費", "83": "冬期講習会費",
+    "91": "講習会費(テキスト代)", "92": "講習会費OP(テスト費)", "93": "講習会費OP(ファイル代)",
+}
+_CHOSEI_NAME_TO_CODE = {
+    "授業料": "10", "入会金": "20", "維持管理費": "30", "基礎教材費": "40",
+    "別途教材費": "50", "テスト費": "60", "その他": "70",
+    "春期講習会費": "81", "夏期講習会費": "82", "冬期講習会費": "83",
+}
+
+
+def _ieb240_parse_form(html: str, formname: str):
+    """IEB240 の指定フォームを name->value で返す（HTML値＋getElementById注入値）。
+    JS注入は _IEB010_JS_VALUE_RE（getElementById限定）で拾うため、関数本体の
+    `fmpost.mode.value="delete"` 等は混入しない。"""
+    soup = BeautifulSoup(html, "html.parser")
+    form = soup.find("form", {"name": formname})
+    if not form:
+        return None
+    data: dict[str, str] = {}
+    for inp in form.find_all("input"):
+        name = inp.get("name")
+        if not name:
+            continue
+        itype = (inp.get("type") or "text").lower()
+        if itype in ("radio", "checkbox"):
+            if inp.has_attr("checked"):
+                data[name] = inp.get("value", "")
+        elif itype in ("button", "submit", "image", "reset"):
+            continue
+        else:
+            data[name] = inp.get("value", "") or ""
+    for sel in form.find_all("select"):
+        name = sel.get("name")
+        if not name:
+            continue
+        opt = sel.find("option", selected=True) or sel.find("option")
+        data[name] = opt.get("value", "") if opt else ""
+    for ta in form.find_all("textarea"):
+        if ta.get("name"):
+            data[ta["name"]] = ta.get_text() or ""
+    for m in _IEB010_JS_VALUE_RE.finditer(html):
+        data[m.group(1)] = m.group(2)
+    return data
+
+
+def _ieb240_frym_wnym(html: str):
+    """ロード済みHTMLから frym(振込の処理年月) / wnym(WNの処理年月) を抽出。"""
+    fr = re.search(r"\bfrym\s*=\s*'(\d{6})'", html)
+    wn = re.search(r"\bwnym\s*=\s*'(\d{6})'", html)
+    return (fr.group(1) if fr else None), (wn.group(1) if wn else None)
+
+
+def _ieb240_load(seitocd: str, seitoshubetsu: str = "0", choseikb: str = "0",
+                 shoriym: str | None = None):
+    """IEB240 に生徒をロード（doreload 相当）。戻り値=ロード後HTML。
+    choseikb="1"(振込)+shoriym(YYYY/MM) で既存の振込調整を展開できる。"""
+    s = _get_session()
+    r0 = s.get(f"{BASE_URL}/service/IEB240.wpp")
+    r0.encoding = "utf-8"
+    fm = _ieb240_parse_form(r0.text, "formmain")
+    if fm is None:
+        raise Exception("IEB240: formmain が見つかりません（セッション切れ?）")
+    fm["seitocd"] = seitocd
+    fm["seitoshubetsu"] = seitoshubetsu
+    fm["choseikb"] = choseikb
+    fm["mode"] = ""
+    if shoriym:
+        fm["shoriym"] = shoriym
+    r = s.post(f"{BASE_URL}/service/IEB240.wpp", data=fm)
+    r.encoding = "utf-8"
+    return r.text
+
+
+def _ieb240_existing(html: str) -> dict:
+    """ロード済みHTMLの既存調整情報（stat_prev・金額・氏名・口座）。"""
+    sp = re.search(r'var\s+stat_prev\s*=\s*"([^"]*)"', html)
+    fp = _ieb240_parse_form(html, "fmpost") or {}
+    fmain = _ieb240_parse_form(html, "formmain") or {}
+    kingaku = {c: fp.get(f"KINGAKU_{c}", "") for c in _CHOSEI_KINGAKU
+               if fp.get(f"KINGAKU_{c}")}
+    return {
+        "seitocd": fmain.get("seitocd"), "seitosm": fmain.get("seitosm"),
+        "seitograde": fmain.get("seitograde"), "wnstatus": fmain.get("wnstatus"),
+        "stat_prev": sp.group(1) if sp else "",
+        "stat_prev_label": {"0": "返金", "1": "追加徴収"}.get(sp.group(1) if sp else "", "なし"),
+        "has_adjustment": bool(kingaku),
+        "kingaku": {f"{c}:{_CHOSEI_KINGAKU[c]}": v for c, v in kingaku.items()},
+        "henkinriyu": fp.get("henkinriyu"),
+        "henkinriyudt": fp.get("imhenkinriyudt"),
+        "shoriym": fp.get("shoriym"),
+        "koza": {"ginko": fp.get("ginkosm"), "shiten": fp.get("shitensm"),
+                 "kozano": fp.get("kozano"), "meigi": fp.get("meiginin")},
+    }
+
+
+def _ieb240_result_msg(html: str):
+    """登録/削除レスポンスから実メッセージ（ソースコード中のalertは除外）を抽出。"""
+    # 完了表示は本文テーブルに現れる。関数定義中の alert("...") は除外したいので
+    # 「登録しました」「削除しました」等の固定句のみを本文出現で判定する。
+    if "登録しました" in html:
+        return True, "登録しました"
+    if "削除しました" in html:
+        return True, "削除しました"
+    m = re.search(r"E\d{5}[:：][^<\n]+", html)
+    if m:
+        return False, m.group(0).strip()
+    return None, None
+
+
+def _choseikb_code(v: str) -> str:
+    return {"furikomi": "1", "振込": "1", "1": "1",
+            "wn": "0", "ワイドネット": "0", "カード": "0", "0": "0"}.get(str(v), "1")
+
+
+@mcp.tool()
+def sks_chousei_get(seitocd: str, choseikb: str = "furikomi",
+                    seitoshubetsu: str = "naibu") -> str:
+    """SKS 調整入力(IEB240)で生徒をロードし、既存の調整（返金/追加徴収）を確認する。
+
+    Args:
+        seitocd: 生徒コード（例 "240006"）
+        choseikb: 調整区分 "furikomi"(振込・当月) / "wn"(次回カード/WN反映・翌月)。
+                  既存の振込調整を見るには "furikomi"。
+        seitoshubetsu: "naibu"(内部生) / "gaibu"(外部生)
+    """
+    ss = "1" if seitoshubetsu == "gaibu" else "0"
+    kb = _choseikb_code(choseikb)
+    html = _ieb240_load(seitocd, ss, kb)
+    frym, wnym = _ieb240_frym_wnym(html)
+    shoriym = frym if kb == "1" else wnym
+    if shoriym:
+        html = _ieb240_load(seitocd, ss, kb, f"{shoriym[:4]}/{shoriym[4:]}")
+    ex = _ieb240_existing(html)
+    ex["frym"] = frym
+    ex["wnym"] = wnym
+    return json.dumps(ex, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_chousei_register(seitocd: str, kingaku: dict, henkin_riyu: str = "退塾",
+                         henkin_riyudt: str = "", choseikb: str = "furikomi",
+                         seitoshubetsu: str = "naibu", tesuryo_futan: str = "先方",
+                         confirm: bool = False) -> str:
+    """SKS 調整入力(IEB240)に【返金】を登録する（dopost_confirm 相当, mode=regist）。
+
+    金銭処理。confirm=True が必須（未指定なら登録せず内容プレビューを返す）。
+
+    Args:
+        seitocd: 生徒コード
+        kingaku: 科目別の返金額。科目コードまたは科目名→金額の dict。
+                 例 {"30": 7800, "40": 6240} / {"維持管理費": 7800, "基礎教材費": 6240}
+                 （コード: 10授業料/20入会金/30維持管理費/40基礎教材費/50別途教材費/
+                  60テスト費/70その他/81春期/82夏期/83冬期/91テキスト代/92OPテスト/93OPファイル）
+        henkin_riyu: 返金理由（退塾/休塾/コース変更/週回数変更/請求間違い）
+        henkin_riyudt: 返金理由日 "YYYY/MM/DD"（返金は必須。実質退塾日でよい）
+        choseikb: "furikomi"(振込) / "wn"(次回カード/WN反映)。退塾者は振込が基本
+        seitoshubetsu: "naibu" / "gaibu"
+        tesuryo_futan: 振込手数料負担 "先方" / "当方"
+        confirm: True で実際に登録。False は登録せずプレビュー
+    """
+    ss = "1" if seitoshubetsu == "gaibu" else "0"
+    kb = _choseikb_code(choseikb)
+    tesu = "1" if tesuryo_futan == "先方" else "0"
+
+    # 科目コードに正規化
+    norm: dict[str, str] = {}
+    for k, v in (kingaku or {}).items():
+        code = str(k) if str(k) in _CHOSEI_KINGAKU else _CHOSEI_NAME_TO_CODE.get(str(k))
+        if not code:
+            return json.dumps({"ok": False, "error": f"未知の科目: {k}"}, ensure_ascii=False)
+        norm[code] = str(int(v))
+    if not norm:
+        return json.dumps({"ok": False, "error": "kingaku が空です"}, ensure_ascii=False)
+    if henkin_riyu and not henkin_riyudt:
+        return json.dumps({"ok": False, "error": "返金は henkin_riyudt(返金理由日) が必須"},
+                          ensure_ascii=False)
+
+    # 処理年月を確定するため一度ロード → frym/wnym
+    pre = _ieb240_load(seitocd, ss, kb)
+    frym, wnym = _ieb240_frym_wnym(pre)
+    shoriym = frym if kb == "1" else wnym
+    if not shoriym:
+        return json.dumps({"ok": False, "error": "処理年月(frym/wnym)を特定できません"},
+                          ensure_ascii=False)
+    html = _ieb240_load(seitocd, ss, kb, f"{shoriym[:4]}/{shoriym[4:]}")
+    fp = _ieb240_parse_form(html, "fmpost")
+    if fp is None:
+        return json.dumps({"ok": False, "error": "fmpost が見つかりません"}, ensure_ascii=False)
+
+    total = 0
+    for c in _CHOSEI_KINGAKU:
+        fp[f"KINGAKU_{c}"] = norm.get(c, "")
+        if norm.get(c):
+            total += int(norm[c])
+    fp["choseisum"] = str(total)
+    fp["shohizei"] = "0"
+    fp["gokei"] = str(total)
+    fp["mode"] = "regist"
+    fp["choseikeitai"] = "0"      # 返金
+    fp["choseikb"] = kb
+    fp["seitoshubetsu"] = ss
+    fp["seitocd"] = seitocd
+    fp["henkinriyu"] = henkin_riyu
+    fp["imhenkinriyudt"] = henkin_riyudt
+    fp["henkinriyudt"] = henkin_riyudt.replace("/", "")
+    fp["tesuryokb"] = tesu
+    fp["shoriym"] = shoriym
+    fp["hikiotoshiym"] = (fp.get("hikiotoshiym", "") or "").replace("/", "")
+    for src, dst in (("imfurikomidt", "furikomidt"), ("imhenkindt", "henkindt"),
+                     ("imshiharaidt", "shiharaidt")):
+        fp[dst] = (fp.get(src, "") or "").replace("/", "")
+
+    preview = {
+        "seitocd": seitocd, "choseikeitai": "返金", "choseikb": "振込" if kb == "1" else "WN/カード反映",
+        "shoriym": shoriym, "kingaku": {f"{c}:{_CHOSEI_KINGAKU[c]}": norm[c] for c in norm},
+        "gokei": total, "henkin_riyu": henkin_riyu, "henkin_riyudt": henkin_riyudt,
+        "tesuryo_futan": tesuryo_futan,
+        "koza": {"ginko": fp.get("ginkosm"), "kozano": fp.get("kozano"), "meigi": fp.get("meiginin")},
+    }
+    if not confirm:
+        return json.dumps({"ok": None, "preview": preview,
+                           "note": "confirm=True で登録します"}, ensure_ascii=False, indent=2)
+
+    s = _get_session()
+    r = s.post(f"{BASE_URL}/service/IEB240.wpp", data=fp)
+    r.encoding = "utf-8"
+    ok, msg = _ieb240_result_msg(r.text)
+    return json.dumps({"ok": bool(ok), "message": msg, "registered": preview},
+                      ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_chousei_delete(seitocd: str, choseikb: str = "furikomi",
+                       seitoshubetsu: str = "naibu", confirm: bool = False) -> str:
+    """SKS 調整入力(IEB240)の既存調整を【削除】する（dodelete 相当, mode=delete）。
+
+    金銭処理。confirm=True が必須。choseikb は既存調整の登録区分に合わせる
+    （振込で登録した調整は "furikomi"）。
+
+    Args:
+        seitocd: 生徒コード
+        choseikb: "furikomi"(振込) / "wn"(次回カード/WN反映)
+        seitoshubetsu: "naibu" / "gaibu"
+        confirm: True で実際に削除。False は削除対象の確認のみ
+    """
+    ss = "1" if seitoshubetsu == "gaibu" else "0"
+    kb = _choseikb_code(choseikb)
+    pre = _ieb240_load(seitocd, ss, kb)
+    frym, wnym = _ieb240_frym_wnym(pre)
+    shoriym = frym if kb == "1" else wnym
+    if not shoriym:
+        return json.dumps({"ok": False, "error": "処理年月(frym/wnym)を特定できません"},
+                          ensure_ascii=False)
+    html = _ieb240_load(seitocd, ss, kb, f"{shoriym[:4]}/{shoriym[4:]}")
+    ex = _ieb240_existing(html)
+    if not (ex["stat_prev"] in ("0", "1") and ex["has_adjustment"]):
+        return json.dumps({"ok": False, "error": "削除対象の既存調整が見つかりません",
+                           "loaded": ex}, ensure_ascii=False, indent=2)
+    if not confirm:
+        return json.dumps({"ok": None, "target": ex, "note": "confirm=True で削除します"},
+                          ensure_ascii=False, indent=2)
+
+    fp = _ieb240_parse_form(html, "fmpost")
+    fmain = _ieb240_parse_form(html, "formmain") or {}
+    fp["mode"] = "delete"
+    fp["choseikeitai"] = ex["stat_prev"]       # 0=返金 / 1=追加徴収
+    fp["choseikb"] = kb
+    fp["seitoshubetsu"] = ss
+    fp["seitocd"] = seitocd
+    fp["shoriym"] = shoriym
+    fp["hikiotoshiym"] = (fp.get("hikiotoshiym", "") or "").replace("/", "")
+    for src, dst in (("imfurikomidt", "furikomidt"), ("imhenkindt", "henkindt"),
+                     ("imshiharaidt", "shiharaidt"), ("imhenkinriyudt", "henkinriyudt")):
+        fp[dst] = (fp.get(src, "") or "").replace("/", "")
+
+    s = _get_session()
+    r = s.post(f"{BASE_URL}/service/IEB240.wpp", data=fp)
+    r.encoding = "utf-8"
+    # 削除確認: 再ロードして既存調整が消えたか
+    after = _ieb240_existing(_ieb240_load(seitocd, ss, kb, f"{shoriym[:4]}/{shoriym[4:]}"))
+    deleted = not after["has_adjustment"]
+    return json.dumps({"ok": deleted, "deleted_target": ex,
+                       "after": {"has_adjustment": after["has_adjustment"],
+                                 "stat_prev": after["stat_prev"]}},
+                      ensure_ascii=False, indent=2)
+
+
 # --- Entry point ---
 if __name__ == "__main__":
     mcp.run()
