@@ -1718,6 +1718,14 @@ _IEB010_JS_VALUE_RE = re.compile(
     r"""document\.getElementById\(\s*['"]([A-Za-z0-9_]+)['"]\s*\)\.value\s*=\s*['"]([^'"]*)['"]\s*;"""
 )
 
+# 一部のフィールドは静的HTMLの value 属性に JS 関数呼び出しのプレースホルダが
+# 直書きされている（例: <input name="entprice" value="getEntprice()">）。
+# ブラウザは登録ボタン押下時に JS が実値へ置換して送るが、requests 経由では
+# プレースホルダ文字列がそのまま POST され、サーバが値を解釈できず
+# "E00002:データベースにてエラーが発生しました。" になる（どのフィールド更新でも失敗）。
+# POST 前にこの種の値を空へ正規化する。
+_IEB010_JS_CALL_RE = re.compile(r"^[A-Za-z_]\w*\s*\([^()]*\)$")
+
 
 def _ieb010_parse_form(html: str):
     """IEB010 のフォームを解析して (form_data, formmain_or_None) を返す。
@@ -1769,6 +1777,12 @@ def _ieb010_parse_form(html: str):
         # imXXX (YYYY/MM/DD) → XXX (YYYYMMDD) も自動補完
         if fld.startswith("im") and re.match(r"\d{4}/\d{2}/\d{2}$", val):
             data[fld[2:]] = val.replace("/", "")
+
+    # JS 関数呼び出しプレースホルダ（例: entprice="getEntprice()"）を空へ正規化。
+    # requests は JS を実行できないため、実値化されないまま送ると E00002 になる。
+    for _k, _v in list(data.items()):
+        if isinstance(_v, str) and _IEB010_JS_CALL_RE.match(_v.strip()):
+            data[_k] = ""
 
     return data, form
 
