@@ -1200,7 +1200,25 @@ def sks_ryokin_search(
 # =====================
 
 SSK2_URL = os.environ.get("SKS_SSK2_URL", "http://sks-ssk2.example.internal")
+if "example.internal" in SSK2_URL:
+    # 未設定の場合は起動時警告のみ、実際のツール呼び出し時に明示エラー化する
+    print(
+        f"[SKS MCP WARN] SKS_SSK2_URL is the placeholder ({SSK2_URL!r}). "
+        f"PCS tools will fail. Add to your env file (SKS_ENV_FILE) e.g. 'SKS_SSK2_URL=http://ssk2.tacsvpn'.",
+        file=sys.stderr,
+    )
 _pcs_session_ready: bool = False
+
+
+def _guard_ssk2_url() -> None:
+    """PCS系ツール開始時に呼ぶ。SSK2_URLが未設定placeholderなら人間に読める例外を上げる。"""
+    if "example.internal" in SSK2_URL:
+        raise RuntimeError(
+            "SKS_SSK2_URL is not configured (currently the default placeholder "
+            f"{SSK2_URL!r}). PCS tools require a real SSK2 domain URL. "
+            "Add e.g. 'SKS_SSK2_URL=http://ssk2.tacsvpn' to your env file "
+            "(pointed to by SKS_ENV_FILE) and restart the MCP process."
+        )
 
 
 _KYOUZAIKB_MAP = {"2": "0", "3": "B"}  # 数学=0, 英語=B
@@ -1218,6 +1236,8 @@ def _pcs_establish_session(s: requests.Session, student_code: str, kyoukakb: str
     戻り値: PcsMenu.doのレスポンス(requests.Response)
     """
     global _pcs_session_ready
+
+    _guard_ssk2_url()
 
     kyouzaikb = _KYOUZAIKB_MAP.get(kyoukakb, "0")
 
@@ -1254,6 +1274,32 @@ def _pcs_establish_session(s: requests.Session, student_code: str, kyoukakb: str
 
     _pcs_session_ready = True
     return r2
+
+
+@mcp.tool()
+def pcs_layout_info() -> str:
+    """PCS系統図（PcsMenu.do）の 5列レイアウト・Y軸階層・「過去2年遡り」帯の
+    意味・_NN小節の使い分け・選定チェックリスト を返す。
+
+    **pcs_create_problem を呼ぶ前に必ず読むこと**。読まずに単元を選定すると
+    ・Col3(応用系:文章問題/割合/比/平均/速さ) が丸ごと落ちる
+    ・Col4(変化と関係:グラフ/変わり方) が抜ける
+    ・小4を機械的に各章1個ずつ選んで下方向に広がりすぎる
+    ・_31 ばかり選んで章丸ごと復習の意図が薄れる
+    等の頻発事故が起きる（2026-07-19 布野兄弟のPCS作成で3回連続の指摘・修正）。
+
+    内容は `~/.tact-mcp/sks_data/pcs_layout_notes.md` から読む。ファイルが
+    無ければエラーメッセージを返す。
+    """
+    p = os.path.join(os.path.expanduser("~"), ".tact-mcp", "sks_data", "pcs_layout_notes.md")
+    if not os.path.exists(p):
+        return json.dumps({
+            "result": "FAILED",
+            "error": f"Layout notes file not found: {p}",
+            "hint": "Ask the classroom operator or check the sks_pcs.html knowledge file48/file49",
+        }, ensure_ascii=False)
+    with open(p, encoding="utf-8") as f:
+        return f.read()
 
 
 @mcp.tool()
@@ -1452,6 +1498,11 @@ def pcs_create_problem(
     auto_complete_cycle: bool = True,
 ) -> str:
     """PCSの問題作成を行う。指定した単元で問題を作成する。
+
+    ⚠️ 単元選定前に `pcs_layout_info()` を呼ぶこと。系統図の 5列レイアウトと
+    「過去2年遡り」帯の意味を理解しないと機械的な章羅列で偏る（Col3応用系や
+    Col4変化と関係が丸ごと落ちる／小4を機械的に均等網羅して下方向に広がる
+    等の頻発事故）。詳細は ~/.tact-mcp/sks_data/pcs_layout_notes.md 参照。
 
     Args:
         student_code: 生徒番号（例: "250015"）
@@ -1727,9 +1778,71 @@ _IEB010_JS_VALUE_RE = re.compile(
 _IEB010_JS_CALL_RE = re.compile(r"^[A-Za-z_]\w*\s*\([^()]*\)$")
 
 
+#: IEB010 で disabled でも POST payload に含める必要があるフィールド。
+#: GUI の dopost_confirmed() が submit 直前に disabled=false にして送るので
+#: サーバー側は実値を期待している。これらを payload から落とすと
+#: wnkozakb 等の必須項目欠落 で E00002 になる。
+_IEB010_DISABLED_INCLUDE = {
+    "wnkozakb", "imwnstym", "wnstym", "keiyakushano",
+    "ZenginCD", "zscdtsucho", "GinkoSM", "ShitenSM",
+    "KozaSyubetsuKB", "KozaNO", "MeigininGinko",
+    "YBTsuchoKigo", "YBTsuchoNO", "MeigininYubin",
+    "ybdefkigo1", "ybdefkigo2", "ybdeftsuchono",
+    "YubinCD", "yubincd",
+    "seitograde", "premshubetsu", "premreason",
+}
+
+
+# ---------------------------------------------------------------------------
+# IEB010 履歴系フィールドの構造的破壊防止 (2026-07-23 確立)
+# ---------------------------------------------------------------------------
+# サーバーの regist ハンドラは、payload の PRECAMV (現DB値) と campaign (新値)
+# を単純比較して差があれば TBFNYUKAIKINJOHO の KYANSHUBETSU / RIYU / PRECAMV
+# を UPDATE で SET する。パーサは form の HTML value 属性を素で拾うだけで、
+# JS 実行後の値は知らない。新規入塾直後の生徒は PRECAMV が JS で挿入される
+# 前の状態 (value="") で form が生成されるため、パーサが送る payload は
+# {PRECAMV="", campaign="10"} または {PRECAMV="10", campaign=""} と対称性が
+# 崩れ、サーバーが「変更あり」と判定して既存 DB 値を空に UPDATE=破壊する。
+#
+# 実証 (2026-07-23、岡田空優260015):
+#   {"PRECAMV":"10","campaign":"","txtriyu1":""} → 履歴データ全消え
+#   {"PRECAMV":"","campaign":"10","txtriyu1":"夏期チラシ"} → 完全復元
+#
+# 対策: ユーザーが明示的にキャンペーン変更を意図しない限り、以下の
+# 「pair 対称化」で payload の (現値, 新値) を常に一致させ、no-op を保証する。
+# これで通常の biko/氏名/住所等の更新では履歴フィールドを構造的に壊せない。
+
+#: サーバーの差分判定に使われる (現DB値フィールド, 新値フィールド) のペア。
+#: ユーザーが新値側を明示指定しなければ、現値をコピーして常に等しくする。
+_IEB010_HISTORY_MIRROR_PAIRS = [
+    ("PRECAMV", "campaign"),
+]
+
+
+def _protect_ieb010_history(data: dict, user_fields: dict) -> None:
+    """IEB010 履歴系フィールドの構造的破壊防止 (対称化)。
+
+    `data` は form から parse した payload。`user_fields` は sks_internal_
+    update_fields 等の呼び出し側でユーザーが明示指定した field dict。
+
+    ユーザーが pair のどちら (現値または新値) も明示指定していない場合は、
+    サーバーが「変更なし」判定するよう新値 = 現値 に強制する。片方だけでも
+    ユーザーが指定していれば意図的操作なのでそのまま通す (エスケープハッチ)。
+    """
+    for cur_key, new_key in _IEB010_HISTORY_MIRROR_PAIRS:
+        if cur_key in user_fields or new_key in user_fields:
+            # ユーザーが履歴変更を明示 → そのまま通す
+            continue
+        data[new_key] = data.get(cur_key, "")
+
+
 def _ieb010_parse_form(html: str):
     """IEB010 のフォームを解析して (form_data, formmain_or_None) を返す。
     JS 注入値・imXXX→XXX のスラッシュ除去コピーまで補完する。
+
+    ⚠️ disabled input/select は、GUI が JS で明示的に enable にして送る
+    ホワイトリスト (`_IEB010_DISABLED_INCLUDE`) 以外は payload から除外する。
+    それらを空で送るとサーバーが既存値を空更新して破壊するため。
     """
     soup = BeautifulSoup(html, "html.parser")
     form = soup.find("form", attrs={"name": "formmain"}) \
@@ -1742,6 +1855,8 @@ def _ieb010_parse_form(html: str):
     for inp in form.find_all("input"):
         name = inp.get("name")
         if not name:
+            continue
+        if inp.has_attr("disabled") and name not in _IEB010_DISABLED_INCLUDE:
             continue
         itype = (inp.get("type") or "text").lower()
         v = inp.get("value", "") or ""
@@ -1759,6 +1874,8 @@ def _ieb010_parse_form(html: str):
     for sel in form.find_all("select"):
         name = sel.get("name")
         if not name:
+            continue
+        if sel.has_attr("disabled") and name not in _IEB010_DISABLED_INCLUDE:
             continue
         opt = sel.find("option", selected=True)
         if opt is None:
@@ -1900,6 +2017,16 @@ def sks_internal_update_fields(seitocd: str, fields: dict) -> str:
         data["nyujukudt"] = data["imnyujukudt"].replace("/", "")
     if data.get("imdatebirth"):
         data["datebirth"] = data["imdatebirth"].replace("/", "")
+
+    # entprice (入会金) が空だと Oracle UPDATE TBFNYUKAIKINJOHO SET NYUKAIKIN=, ...
+    # で ORA-00936 (式がありません) → E00002。JS プレースホルダ getEntprice() が
+    # _IEB010_JS_CALL_RE で "" に正規化されるため、新規入塾直後の生徒で発生する。
+    # 数値列なので 0 に補完する。
+    if not data.get("entprice"):
+        data["entprice"] = "0"
+
+    # 履歴系フィールド (PRECAMV/campaign) の対称化 = 構造的破壊防止
+    _protect_ieb010_history(data, fields)
 
     data["cmd"] = "regist"
     data.setdefault("TORIKOMIFLG", "1")
@@ -2523,6 +2650,16 @@ def sks_convert_gaibu_to_internal(
     if data.get("imdatebirth"):
         data["datebirth"] = data["imdatebirth"].replace("/", "")
 
+    # entprice (入会金) が空だと Oracle UPDATE TBFNYUKAIKINJOHO SET NYUKAIKIN=, ...
+    # で ORA-00936 (式がありません) → E00002。JS プレースホルダ getEntprice() が
+    # _IEB010_JS_CALL_RE で "" に正規化されるため、新規入塾直後の生徒で発生する。
+    # 数値列なので 0 に補完する。
+    if not data.get("entprice"):
+        data["entprice"] = "0"
+
+    # 履歴系フィールド (PRECAMV/campaign) の対称化 = 構造的破壊防止
+    _protect_ieb010_history(data, additional_fields or {})
+
     data["cmd"] = "regist"
     data.setdefault("TORIKOMIFLG", "1")
 
@@ -2722,6 +2859,16 @@ def sks_naibusei_register_from_inquiry(
         data["nyujukudt"] = data["imnyujukudt"].replace("/", "")
     if data.get("imdatebirth"):
         data["datebirth"] = data["imdatebirth"].replace("/", "")
+
+    # entprice (入会金) が空だと Oracle UPDATE TBFNYUKAIKINJOHO SET NYUKAIKIN=, ...
+    # で ORA-00936 (式がありません) → E00002。JS プレースホルダ getEntprice() が
+    # _IEB010_JS_CALL_RE で "" に正規化されるため、新規入塾直後の生徒で発生する。
+    # 数値列なので 0 に補完する。
+    if not data.get("entprice"):
+        data["entprice"] = "0"
+
+    # 履歴系フィールド (PRECAMV/campaign) の対称化 = 構造的破壊防止
+    _protect_ieb010_history(data, additional_fields or {})
 
     data["cmd"] = "regist"
     data.setdefault("TORIKOMIFLG", "1")
@@ -3437,6 +3584,843 @@ def sks_chousei_delete(seitocd: str, choseikb: str = "furikomi",
                        "after": {"has_adjustment": after["has_adjustment"],
                                  "stat_prev": after["stat_prev"]}},
                       ensure_ascii=False, indent=2)
+
+
+# =====================
+# IEB250 月謝台帳出力（Excel自動DL + パース）
+# =====================
+
+def _ieb250_parse(html: str, target_seitocd: str | None = None) -> dict:
+    """IEB250 Excel(=HTML)レスポンスをパースして月謝台帳を構造化。
+
+    SKSが返すのは Content-Type: application/vnd.ms-excel の HTML(Excel互換)。
+    各生徒ブロックの構成は、まず科目ラベルが縦に21行並び、続いて月ヘッダ行
+    （YYYY年MM月×12 + 合計）、その後同順で21科目分の数値行が並ぶ。
+
+    戻り値: {"students":[{"seitocd","name","grade","months","rows","total"}, ...]}
+    rows[科目] = 月別配列 (None=空表示, 整数=金額)。
+    target_seitocd 指定でその生徒のみ返す。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    tables = soup.find_all("table")
+
+    markers: list[tuple[int, str, str, str]] = []
+    for i, tbl in enumerate(tables):
+        cells = [td.get_text(strip=True) for td in tbl.find_all(["td", "th"])]
+        if len(cells) >= 3 and cells[0] == "生徒番号" and cells[1].startswith("'"):
+            code = cells[1][1:]
+            m = re.match(r"^(.*?)\s*【(.+?)】$", cells[2])
+            name = m.group(1) if m else cells[2]
+            grade = m.group(2) if m else ""
+            markers.append((i, code, name, grade))
+
+    def _num(s: str):
+        if s is None:
+            return None
+        s = s.strip()
+        if not s or s == "・":
+            return None
+        try:
+            return int(s.replace(",", ""))
+        except ValueError:
+            return None
+
+    students = []
+    for j, (mi, code, name, grade) in enumerate(markers):
+        if target_seitocd and code != target_seitocd:
+            continue
+        end_i = markers[j + 1][0] if j + 1 < len(markers) else len(tables)
+        # ブロック内の全 tr を、入れ子テーブルが原因で重複しないよう浅く拾う
+        all_trs = []
+        for tbl in tables[mi:end_i]:
+            for tr in tbl.find_all("tr", recursive=True):
+                all_trs.append(tr)
+        # tr ごとに直下の td/th だけ取得（入れ子tableのtrは別途処理されるので除外）
+        trs_cells: list[list[str]] = []
+        for tr in all_trs:
+            # tr の直下 td/th のみ（深い tr は別途登場するので excluded）
+            tds = tr.find_all(["td", "th"], recursive=False)
+            cells = [td.get_text(strip=True) for td in tds]
+            if any(c.strip() for c in cells):
+                trs_cells.append(cells)
+
+        # 月ヘッダ行を探す
+        header_idx = -1
+        months: list[str] = []
+        for ti, cs in enumerate(trs_cells):
+            cs_strip = [c.strip() for c in cs]
+            ms = [c for c in cs_strip if re.match(r"^\d{4}年\d{2}月$", c)]
+            if len(ms) >= 6 and any(c in ("合　計", "合計") for c in cs_strip):
+                header_idx = ti
+                months = ms
+                break
+        if header_idx < 0:
+            continue
+
+        # ラベル列: 月ヘッダ直前までの単独セル行
+        labels: list[str] = []
+        for cs in trs_cells[:header_idx]:
+            non_empty = [c.strip() for c in cs if c.strip()]
+            if len(non_empty) != 1:
+                continue
+            lab = non_empty[0].replace("　", "").replace(" ", "")
+            if lab == "科目":
+                continue
+            labels.append(lab)
+
+        # 数値行: header_idx+1 以降を順に、labels に対応させる
+        # 列数(月+合計=13) の行を数値行扱い。値が全て None でも空表示の行として残す
+        rows: dict[str, list[int | None]] = {}
+        totals: dict[str, int] = {}
+        n_cols = len(months) + 1
+        idx = 0
+        for cs in trs_cells[header_idx + 1:]:
+            if idx >= len(labels):
+                break
+            if len(cs) != n_cols:
+                continue
+            vals = [_num(cs[k]) for k in range(len(months))]
+            tot = _num(cs[len(months)])
+            label = labels[idx]
+            rows[label] = vals
+            if tot is not None:
+                totals[label] = tot
+            idx += 1
+
+        students.append({
+            "seitocd": code, "name": name, "grade": grade,
+            "months": months, "rows": rows, "total": totals,
+        })
+    return {"students": students}
+
+
+@mcp.tool()
+def sks_gessyadaicho_export(
+    taishoym: str,
+    seitocds: str = "",
+    kubun: str = "naibu",
+    include_taijuku: bool = False,
+    save_path: str = "",
+    parse: bool = True,
+) -> str:
+    """SKS IEB250「月謝台帳出力」をExcel自動DLし、構造化して返す。
+
+    SKSメニューの IEB250 をブラウザGUIで操作する代わりに、内部のAjax/POST APIを
+    直接叩いて Excel（HTML-Excel）を取得する。
+
+    Args:
+        taishoym: 対象年月 YYYY/MM または YYYYMM。**12ヶ月表示窓の開始月**。
+                  入会時(過去)の請求を見たければ入会月を指定する。
+        seitocds: カンマ区切りの生徒コード列。空なら全件。例 "260006,260002"
+        kubun: "naibu"=内部生 / "gaibu"=外部生
+        include_taijuku: True=退塾者も含める
+        save_path: 保存先パス（空なら保存せず構造化結果のみ返す）
+        parse: True=HTMLをパースしてJSONで返す / False=保存パスのみ返す
+
+    Returns:
+        JSON: {"ok": True, "taishoym": "...", "students": [...], "saved": "<path>"}
+        - 各 student: {"seitocd","name","grade","months","rows","total"}
+        - rows[科目] = 月別配列 (None=非表示, 0=ゼロ, 整数=金額)
+    """
+    ym_slash = taishoym if "/" in taishoym else f"{taishoym[:4]}/{taishoym[4:]}"
+    ym_str = ym_slash.replace("/", "")
+    if not re.match(r"^\d{6}$", ym_str):
+        return json.dumps({"ok": False, "error": f"invalid taishoym: {taishoym}"},
+                          ensure_ascii=False)
+
+    sess = _get_session()
+    # 1. ページ初期化（セッション確立）
+    sess.get(f"{BASE_URL}/service/IEB250.wpp")
+
+    # 2. Ajax で生徒一覧取得
+    # param = VIEW|YYYYMM|区分(0:内/1:外)|grade|notaijuku|sortv1|sortv2
+    kubun_code = "0" if kubun == "naibu" else "1"
+    notaijuku = "0" if include_taijuku else "1"
+    ax_param = f"VIEW|{ym_str}|{kubun_code}||{notaijuku}|0|0"
+    r_ax = sess.get(f"{BASE_URL}/service/IEB250.wpp",
+                    params={"cmd": "ax", "param": ax_param})
+    codes_all = re.findall(r'sel0\(this,&quot;(\d+)&quot;', r_ax.text) \
+        or re.findall(r'sel0\(this,"(\d+)"', r_ax.text)
+    codes_all = list(dict.fromkeys(codes_all))
+
+    # 3. 出力対象を決定
+    if seitocds.strip():
+        wanted = [c.strip() for c in seitocds.split(",") if c.strip()]
+        # 一覧に無い生徒（退塾済等）も指定可能。SKSは個別にも応答する
+        codes_post = wanted
+    else:
+        codes_post = codes_all
+
+    if not codes_post:
+        return json.dumps({"ok": False, "error": "no students to export",
+                           "ax_count": len(codes_all)},
+                          ensure_ascii=False)
+
+    # 4. fmp フォームで Excel POST
+    r_xls = sess.post(f"{BASE_URL}/service/IEB250.wpp?excel",
+                      data={"mode": "print", "taishoym": ym_str,
+                            "s": ",".join(codes_post)})
+    if not r_xls.content:
+        return json.dumps({"ok": False, "error": "empty response"},
+                          ensure_ascii=False)
+
+    saved = ""
+    if save_path:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        with open(save_path, "wb") as f:
+            f.write(r_xls.content)
+        saved = save_path
+
+    out: dict = {"ok": True, "taishoym": ym_slash,
+                 "students_requested": codes_post,
+                 "ax_students_count": len(codes_all)}
+    if saved:
+        out["saved"] = saved
+    if parse:
+        try:
+            text = r_xls.content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = r_xls.content.decode("utf-8", errors="replace")
+        target = codes_post[0] if len(codes_post) == 1 else None
+        parsed = _ieb250_parse(text, target_seitocd=target)
+        out["students"] = parsed["students"]
+    else:
+        out["bytes"] = len(r_xls.content)
+    return json.dumps(out, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_widenet_data_create(shoriym: str = "", confirm: bool = False) -> str:
+    """IEB110「カード・ワイドネット請求データ作成」を実行する。
+
+    月次WN〆フローの最初のステップ。処理年月の翌月分の請求データを作成する。
+    IEB320「WN／カード請求締め処理」の前工程。
+
+    Args:
+        shoriym: 処理年月（YYYY/MM 形式）。空ならSKSのIEB110 GETが返す既定値を使う。
+        confirm: True なら実行。False（既定）は dry-run（画面上の shoriym/billym を返すのみ）。
+
+    Returns:
+        JSON: {ok, shoriym, billym, created, deleted, message, url}
+        - created: データ作成件数
+        - deleted: 請求額「０」による削除件数
+    """
+    s = _get_session()
+
+    r0 = s.get(f"{BASE_URL}/service/IEB110.wpp")
+    html0 = r0.content.decode("utf-8", errors="replace")
+    soup0 = BeautifulSoup(html0, "html.parser")
+
+    def _find_hidden(name: str) -> str:
+        el = soup0.find("input", {"name": name})
+        return (el.get("value", "") if el else "").strip()
+
+    default_shori = _find_hidden("shoriym")
+    default_bill = _find_hidden("billym")
+
+    if not default_shori or not default_bill:
+        return json.dumps({
+            "ok": False,
+            "error": "IEB110 GET でshoriym/billymが取得できませんでした（ログインまたは画面構造の変化）",
+        }, ensure_ascii=False, indent=2)
+
+    if shoriym and shoriym != default_shori:
+        return json.dumps({
+            "ok": False,
+            "error": f"指定 shoriym={shoriym} は画面既定 {default_shori} と一致しません。SKS運用上、当月分以外の遡及/先送り実行はサポートしていません。",
+            "screen_shoriym": default_shori,
+            "screen_billym": default_bill,
+        }, ensure_ascii=False, indent=2)
+
+    used_shori = default_shori
+    used_bill = default_bill
+
+    def _parse_result(html: str) -> dict:
+        text = BeautifulSoup(html, "html.parser").get_text("\n")
+        done = "作成が終了しました" in text
+        m_created = re.search(r"データ作成件数[：:]\s*(\d+)", text)
+        m_deleted = re.search(r"削除件数[：:]\s*(\d+)", text)
+        return {
+            "ok": done,
+            "created": int(m_created.group(1)) if m_created else None,
+            "deleted": int(m_deleted.group(1)) if m_deleted else None,
+            "raw_snippet": text.strip()[:400],
+        }
+
+    if not confirm:
+        return json.dumps({
+            "ok": True,
+            "dry_run": True,
+            "shoriym": used_shori,
+            "billym": used_bill,
+            "note": "confirm=True で実行。JS dopost() 相当の GET /service/IEB110.wpp?mode=if&shoriym=...&billym=... を叩く。",
+        }, ensure_ascii=False, indent=2)
+
+    params = {"mode": "if", "shoriym": used_shori, "billym": used_bill}
+    r = s.get(f"{BASE_URL}/service/IEB110.wpp", params=params)
+    html = r.content.decode("utf-8", errors="replace")
+    parsed = _parse_result(html)
+
+    return json.dumps({
+        "ok": parsed["ok"],
+        "shoriym": used_shori,
+        "billym": used_bill,
+        "created": parsed["created"],
+        "deleted": parsed["deleted"],
+        "message": "カード・ワイドネット請求データの作成が終了しました。" if parsed["ok"] else "作成完了を検出できませんでした",
+        "url": r.url,
+        "raw_snippet": parsed["raw_snippet"],
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_daikin_meisai_export(
+    taishoym: str,
+    repkb: str = "seitobetsu",
+    shoriym: str = "",
+    save_path: str = "",
+) -> str:
+    """IEB550「代金内訳明細書印刷」の PDF を取得する。
+
+    出力区分（repkb）の3種いずれかで、任意の対象年月の代金内訳明細書を PDF で返す。
+    「生徒別合計」は月次〆前後の残高・請求状況把握に使う（前月請求済みかの確認等）。
+
+    HTTPチェーン: POST /service/IEB550.wpp → 中継HTML(input params) → GET /cgi-bin/bizreport.pl → PDF
+
+    Args:
+        taishoym: 対象年月（YYYY/MM または YYYYMM）。例 "2026/06"
+        repkb: 出力区分。"wn"|"card"|"0"=カード/WN請求のみ、"furikomi"|"1"=振込のみ、"seitobetsu"|"2"=生徒別合計（既定）
+        shoriym: 処理年月（YYYY/MM）。空なら IEB550 GET 既定値（当月）を使う
+        save_path: PDF保存先。空ならバイトサイズのみ返す（PDF内容は返さない）
+
+    Returns:
+        JSON: {ok, taishoym, repkb, shoriym, saved, bytes, is_empty}
+        - is_empty: PDF実体があるが対象データなしのテンプレ（~987B）の可能性がTrue
+    """
+    ym_str = taishoym.replace("/", "")
+    if not re.match(r"^\d{6}$", ym_str):
+        return json.dumps({"ok": False, "error": f"invalid taishoym: {taishoym}"},
+                          ensure_ascii=False)
+
+    _repkb_map = {
+        "wn": "0", "card": "0", "wn_card": "0", "0": "0",
+        "furikomi": "1", "furi": "1", "1": "1",
+        "seitobetsu": "2", "sougou": "2", "goukei": "2", "2": "2",
+    }
+    kb = _repkb_map.get(repkb.lower(), None)
+    if kb is None:
+        return json.dumps({"ok": False, "error": f"invalid repkb: {repkb}",
+                           "hint": "use one of: wn/card/0, furikomi/1, seitobetsu/2"},
+                          ensure_ascii=False)
+
+    s = _get_session()
+
+    r0 = s.get(f"{BASE_URL}/service/IEB550.wpp")
+    if not shoriym:
+        soup0 = BeautifulSoup(r0.content.decode("utf-8", errors="replace"), "html.parser")
+        el = soup0.find("input", {"name": "shoriym"})
+        shoriym = (el.get("value", "") if el else "").strip()
+        if not shoriym:
+            return json.dumps({"ok": False, "error": "shoriym既定値が取れませんでした"},
+                              ensure_ascii=False)
+
+    data = {
+        "kyoshitsucd": CLASSROOM,
+        "kyoshitsusm": os.environ.get("SKS_CLASSROOM_NAME", ""),
+        "cmd": "print",
+        "shoriym": shoriym,
+        "repkb": kb,
+        "taishoym": ym_str,
+    }
+    r1 = s.post(f"{BASE_URL}/service/IEB550.wpp", data=data)
+
+    pdf_bytes: bytes | None = None
+    if r1.content.startswith(b"%PDF"):
+        pdf_bytes = r1.content
+    else:
+        soup = BeautifulSoup(r1.text, "html.parser")
+        params = {}
+        for inp in soup.find_all("input"):
+            nm = inp.get("name")
+            val = inp.get("value", "") or ""
+            if nm and nm not in ("submitButtonName",):
+                params[nm] = val
+        if not params or params.get("ParamSEIKYUYM") == "000001":
+            return json.dumps({"ok": True, "taishoym": ym_str, "repkb": kb,
+                               "shoriym": shoriym, "is_empty": True,
+                               "message": "対象データなし（中継HTML判定）"},
+                              ensure_ascii=False)
+        r2 = s.get(f"{BASE_URL}/cgi-bin/bizreport.pl", params=params)
+        if r2.content.startswith(b"%PDF"):
+            pdf_bytes = r2.content
+        else:
+            return json.dumps({"ok": False, "taishoym": ym_str, "repkb": kb,
+                               "shoriym": shoriym,
+                               "error": "PDFではないレスポンス",
+                               "content_type": r2.headers.get("content-type", ""),
+                               "bytes": len(r2.content)},
+                              ensure_ascii=False)
+
+    is_empty = len(pdf_bytes) < 1500
+    saved = ""
+    if save_path:
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        with open(save_path, "wb") as f:
+            f.write(pdf_bytes)
+        saved = save_path
+
+    return json.dumps({
+        "ok": True,
+        "taishoym": ym_str,
+        "repkb": kb,
+        "shoriym": shoriym,
+        "bytes": len(pdf_bytes),
+        "is_empty": is_empty,
+        "saved": saved,
+        "note": "is_empty=True は 987B前後の対象データなしテンプレの可能性" if is_empty else "",
+    }, ensure_ascii=False, indent=2)
+
+
+_IEB061_KOSHU_SHUBETSU = {"春期": "81", "夏期": "82", "冬期": "83"}
+_IEB061_GRADE_CODE = {
+    "小1": "07", "小2": "08", "小3": "09", "小4": "10", "小5": "11", "小6": "12",
+    "中1": "13", "中2": "14", "中3": "15",
+    "高1": "16", "高2": "17", "高3": "18",
+    "その他": "20",
+}
+
+
+def _ieb061_load_student(sess, seitocd: str, grade_label: str, shoriym: str, billym: str) -> dict:
+    """IEB061 の cmd=if で生徒詳細を取得し、courseop/Course3 と既存if1/if2/if3行を辞書化して返す。"""
+    sess.get(f"{BASE_URL}/service/IEB061.wpp")
+    gcode = _IEB061_GRADE_CODE.get(grade_label)
+    if gcode is None:
+        raise ValueError(f"unknown grade: {grade_label!r} (expected 小4/中3/高2 etc)")
+    param = f"A|{seitocd}|{gcode}:{grade_label}|{shoriym}|{billym}"
+    r = sess.get(f"{BASE_URL}/service/IEB061.wpp",
+                 params={"cmd": "if", "param": param})
+    text = r.content.decode("utf-8", errors="replace")
+    if "生徒" not in text and "courseop" not in text:
+        raise RuntimeError(f"IEB061 load returned unexpected content ({len(text)}B)")
+
+    courseop: dict = {}
+    for m in re.finditer(r"courseop\['([^']+)'\]\s*=\s*'([^']+)'", text):
+        code, val = m.group(1), m.group(2)
+        parts = val.split("/")
+        try:
+            tanka = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        except Exception:
+            tanka = None
+        courseop[code] = {"tanka": tanka, "stage": parts[0], "raw": val}
+
+    course3: dict = {}
+    for m in re.finditer(r"Course3\['(\d+)'\]\['([^']+)'\]\s*=\s*'([^｜']+)｜", text):
+        bsel = m.group(1)
+        ryokin = m.group(2)
+        label = m.group(3)
+        course3.setdefault(bsel, {})[ryokin] = label
+
+    def _extract_rows(prefix: str, max_i: int) -> dict:
+        rows: dict = {}
+        for i in range(1, max_i + 1):
+            rsel_m = re.search(rf"finditem\('{prefix}rsel{i}',\s*'([^']*)'\)", text)
+            if not rsel_m or not rsel_m.group(1):
+                continue
+            row = {"rsel": rsel_m.group(1)}
+            bsel_m = re.search(rf"finditem\('{prefix}bsel{i}',\s*'([^']*)'\)", text)
+            if bsel_m:
+                row["bsel"] = bsel_m.group(1)
+            ksel_m = re.search(rf"finditem\('{prefix}ksel{i}',\s*(\d+)\)", text)
+            if ksel_m:
+                row["ksel"] = ksel_m.group(1)
+            koma_m = re.search(rf"getElementById\('{prefix}koma{i}'\)\.value\s*=\s*'([^']*)'", text)
+            if koma_m:
+                row["koma"] = koma_m.group(1)
+            tanka_m = re.search(rf"getElementById\('{prefix}tanka{i}'\)\.value\s*=\s*'([^']*)'", text)
+            if tanka_m:
+                row["tanka"] = tanka_m.group(1)
+            kin_m = re.search(rf"getElementById\('{prefix}kingaku{i}'\)\.value\s*=\s*'([^']*)'", text)
+            if kin_m:
+                row["kingaku"] = kin_m.group(1)
+            taisho_m = re.search(rf"finditem\(\"{prefix}taisho{i}\",\s*\"([^\"]*)\"\)", text)
+            if taisho_m:
+                row["taisho"] = taisho_m.group(1)
+            rows[i] = row
+        return rows
+
+    return {"seitocd": seitocd, "grade": grade_label, "shoriym": shoriym,
+            "billym": billym, "courseop": courseop, "course3": course3,
+            "existing": {
+                "if1": _extract_rows("if1", 10),
+                "if2": _extract_rows("if2", 20),
+                "if3": _extract_rows("if3", 5),
+            }}
+
+
+@mcp.tool()
+def sks_ieb061_load(seitocd: str, grade: str) -> str:
+    """IEB061「カード・ワイドネット者用料金入力」で指定生徒の詳細をロードし、選択可能な講習会費コース一覧＋単価を返す。
+
+    夏期／春期／冬期の料金コード（ifrsel）を確定するのに使う。
+
+    Args:
+        seitocd: 生徒コード（例 "240035"）
+        grade: 学年ラベル（例 "中3"/"高2"/"小5"）
+
+    Returns:
+        JSON: {seitocd, grade, shoriym, billym,
+               koshu_options: [{shubetsu, bsel, ryokin_code, name, tanka}, ...]}
+    """
+    sess = _get_session()
+    r0 = sess.get(f"{BASE_URL}/service/IEB061.wpp")
+    soup = BeautifulSoup(r0.content.decode("utf-8", errors="replace"), "html.parser")
+    def val(name):
+        el = soup.find(id=name) or soup.find("input", {"name": name})
+        return (el.get("value", "") if el else "").strip()
+    shoriym = val("_shoriym") or val("shoriym")
+    billym = val("billym")
+    shoriym_yyyymm = shoriym.replace("/", "") if shoriym else ""
+    if not shoriym or not billym:
+        return json.dumps({"ok": False, "error": "IEB061 GET で shoriym/billym 取れず"},
+                          ensure_ascii=False)
+
+    try:
+        info = _ieb061_load_student(sess, seitocd, grade, shoriym, billym)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+    options: list = []
+    for bsel, ryokin_map in info["course3"].items():
+        shubetsu = {"81": "春期", "82": "夏期", "83": "冬期"}.get(bsel, bsel)
+        for code, name in ryokin_map.items():
+            tanka = (info["courseop"].get(code) or {}).get("tanka")
+            options.append({"shubetsu": shubetsu, "bsel": bsel,
+                            "ryokin_code": code, "name": name, "tanka": tanka})
+    return json.dumps({"ok": True, "seitocd": seitocd, "grade": grade,
+                       "shoriym": shoriym_yyyymm or shoriym, "billym": billym,
+                       "koshu_options_count": len(options),
+                       "koshu_options": options}, ensure_ascii=False, indent=2)
+
+
+_IEB061_MISC_BSEL = {
+    "授業料値引": "19", "入会金": "20", "入会金値引": "29",
+    "維持管理費": "30", "基礎教材費": "40", "別途教材費": "50",
+    "テスト費": "60", "ﾃｽﾄ費": "60", "その他": "70",
+    "講習会費テキスト代": "91", "講習会費（テキスト代）": "91", "講習会費（ﾃｷｽﾄ代）": "91",
+    "講習会費オプションテスト費": "92", "講習会費オプション（テスト費）": "92",
+    "講習会費ｵﾌﾟｼｮﾝ（ﾃｽﾄ費）": "92",
+    "講習会費オプションファイル代": "93", "講習会費オプション（ファイル代）": "93",
+    "講習会費ｵﾌﾟｼｮﾝ（ﾌｧｲﾙ代）": "93",
+}
+
+
+@mcp.tool()
+def sks_wn_koshu_register(
+    seitocd: str,
+    grade: str,
+    lines: list,
+    misc_lines: list | None = None,
+    bcomment: str = "",
+    confirm: bool = False,
+) -> str:
+    """IEB061 経由でワイドネット対象生徒に講習会費行（最大5行）と諸経費行（追加分）を登録する。
+
+    Args:
+        seitocd: 生徒コード
+        grade: 学年ラベル
+        lines: 講習会費行。[{"shubetsu":"夏期", "ryokin_code":"16200/15", "koma": 36}, ...]
+        misc_lines: 諸経費追加行（テキスト代等）。
+                    [{"bunrui":"講習会費テキスト代", "ryokin_code":"15700/99", "quantity":1}, ...]
+                    tankaは courseop から自動、kingaku = quantity × tanka
+        bcomment: YSPC請求明細コメント
+        confirm: False(既定)=dry-run
+    """
+    if not lines or len(lines) > 5:
+        return json.dumps({"ok": False, "error": "lines は1〜5件"}, ensure_ascii=False)
+
+    sess = _get_session()
+    r0 = sess.get(f"{BASE_URL}/service/IEB061.wpp")
+    soup = BeautifulSoup(r0.content.decode("utf-8", errors="replace"), "html.parser")
+    def val(name):
+        el = soup.find(id=name) or soup.find("input", {"name": name})
+        return (el.get("value", "") if el else "").strip()
+    shoriym_slash = val("_shoriym") or val("shoriym")
+    billym_slash = val("billym")
+    if not shoriym_slash or not billym_slash:
+        return json.dumps({"ok": False, "error": "shoriym/billym を IEB061 GET から取れず"},
+                          ensure_ascii=False)
+    shoriym_yyyymm = shoriym_slash.replace("/", "")
+    billym_yyyymm = billym_slash.replace("/", "")
+
+    try:
+        info = _ieb061_load_student(sess, seitocd, grade, shoriym_slash, billym_slash)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"load失敗: {e}"}, ensure_ascii=False)
+
+    resolved = []
+    for ln in lines:
+        shubetsu = ln.get("shubetsu", "夏期")
+        bsel = _IEB061_KOSHU_SHUBETSU.get(shubetsu)
+        if bsel is None:
+            return json.dumps({"ok": False,
+                               "error": f"shubetsu 不正: {shubetsu}"},
+                              ensure_ascii=False)
+        ryokin = ln["ryokin_code"]
+        if ryokin not in info["course3"].get(bsel, {}):
+            return json.dumps({"ok": False,
+                               "error": f"料金コード {ryokin} は bsel={bsel} に存在せず",
+                               "hint": "sks_ieb061_load で確認",
+                               "available_sample": list(info["course3"].get(bsel, {}).items())[:5]},
+                              ensure_ascii=False)
+        koma = int(ln["koma"])
+        if koma <= 0:
+            return json.dumps({"ok": False, "error": "コマ数は正の整数"}, ensure_ascii=False)
+        tanka = (info["courseop"].get(ryokin) or {}).get("tanka")
+        if tanka is None:
+            return json.dumps({"ok": False,
+                               "error": f"courseop に単価がない: {ryokin}"},
+                              ensure_ascii=False)
+        resolved.append({"shubetsu": shubetsu, "bsel": bsel, "ryokin": ryokin,
+                         "name": info["course3"][bsel][ryokin],
+                         "koma": koma, "tanka": tanka, "kingaku": koma * tanka})
+
+    misc_resolved = []
+    for ln in (misc_lines or []):
+        bunrui = ln.get("bunrui", "")
+        bsel = _IEB061_MISC_BSEL.get(bunrui)
+        if bsel is None:
+            return json.dumps({"ok": False,
+                               "error": f"bunrui 不正: {bunrui}",
+                               "hint": f"valid: {list(_IEB061_MISC_BSEL.keys())}"},
+                              ensure_ascii=False)
+        ryokin = ln["ryokin_code"]
+        qty = int(ln.get("quantity", 1))
+        tanka_override = ln.get("tanka")
+        if tanka_override is not None:
+            tanka = int(tanka_override)
+        else:
+            tanka = (info["courseop"].get(ryokin) or {}).get("tanka")
+            if tanka is None:
+                return json.dumps({"ok": False,
+                                   "error": f"courseop に単価がない: {ryokin}"},
+                                  ensure_ascii=False)
+        misc_resolved.append({"bunrui": bunrui, "bsel": bsel, "ryokin": ryokin,
+                              "quantity": qty, "tanka": tanka, "kingaku": qty * tanka})
+
+    total_all = sum(r["kingaku"] for r in resolved) + sum(r["kingaku"] for r in misc_resolved)
+
+    if not confirm:
+        return json.dumps({"ok": True, "dry_run": True, "seitocd": seitocd,
+                           "grade": grade, "shoriym": shoriym_yyyymm,
+                           "billym": billym_yyyymm,
+                           "resolved": resolved, "misc_resolved": misc_resolved,
+                           "bcomment": bcomment,
+                           "total": total_all,
+                           "note": "confirm=True で実POSTします"},
+                          ensure_ascii=False, indent=2)
+
+    fmpost = {
+        "mode": "regist",
+        "seitocd": seitocd,
+        "seikyuym": billym_slash,
+        "shoriym": shoriym_yyyymm,
+        "bcomment": bcomment,
+        "scrolltop": "0",
+    }
+    def _kingaku0(row: dict) -> str:
+        k = row.get("kingaku")
+        if k:
+            return str(k)
+        try:
+            return str(int(row.get("tanka") or 0) * int(row.get("koma") or 0))
+        except Exception:
+            return ""
+    for i, row in (info["existing"]["if1"] or {}).items():
+        idx = 10 + int(i)
+        fmpost[f"ifcb{idx}"] = ""
+        fmpost[f"ifminus{idx}"] = ""
+        fmpost[f"ifbsel{idx}"] = "10"
+        fmpost[f"ifrsel{idx}"] = row.get("rsel", "")
+        fmpost[f"ifksel{idx}"] = row.get("ksel", "")
+        fmpost[f"ifkomasu{idx}"] = row.get("koma", "")
+        fmpost[f"iftanka{idx}"] = row.get("tanka", "")
+        fmpost[f"ifkingaku{idx}"] = _kingaku0(row)
+        fmpost[f"iftaisho{idx}"] = row.get("taisho", "")
+    def _kingaku(row: dict) -> str:
+        k = row.get("kingaku")
+        if k:
+            return str(k)
+        try:
+            return str(int(row.get("tanka") or 0) * int(row.get("koma") or 0))
+        except Exception:
+            return ""
+    existing_if2 = info["existing"]["if2"] or {}
+    used_if2_indexes: set = set(existing_if2.keys())
+    for i, row in existing_if2.items():
+        idx = 20 + int(i)
+        fmpost[f"ifcb{idx}"] = ""
+        fmpost[f"ifminus{idx}"] = "0"
+        fmpost[f"ifbsel{idx}"] = row.get("bsel", "")
+        fmpost[f"ifrsel{idx}"] = row.get("rsel", "")
+        fmpost[f"ifkomasu{idx}"] = row.get("koma", "")
+        fmpost[f"iftanka{idx}"] = row.get("tanka", "")
+        fmpost[f"ifkingaku{idx}"] = _kingaku(row)
+        fmpost[f"iftext{idx}"] = ""
+    misc_slot = 1
+    for mr in misc_resolved:
+        while misc_slot in used_if2_indexes:
+            misc_slot += 1
+        if misc_slot > 20:
+            return json.dumps({"ok": False,
+                               "error": "諸経費行が20行を超えました（既存分含む）"},
+                              ensure_ascii=False)
+        idx = 20 + misc_slot
+        fmpost[f"ifcb{idx}"] = ""
+        fmpost[f"ifminus{idx}"] = "0"
+        fmpost[f"ifbsel{idx}"] = mr["bsel"]
+        fmpost[f"ifrsel{idx}"] = mr["ryokin"]
+        fmpost[f"ifkomasu{idx}"] = str(mr["quantity"])
+        fmpost[f"iftanka{idx}"] = str(mr["tanka"])
+        fmpost[f"ifkingaku{idx}"] = str(mr["kingaku"])
+        fmpost[f"iftext{idx}"] = ""
+        used_if2_indexes.add(misc_slot)
+        misc_slot += 1
+    existing_if3 = info["existing"]["if3"] or {}
+    used_if3_indexes: set = set(existing_if3.keys())
+    for i, row in existing_if3.items():
+        idx = 40 + int(i)
+        fmpost[f"ifcb{idx}"] = ""
+        fmpost[f"ifminus{idx}"] = "0"
+        fmpost[f"iftext{idx}"] = "0"
+        fmpost[f"ifbsel{idx}"] = row.get("bsel", "")
+        fmpost[f"ifrsel{idx}"] = row.get("rsel", "")
+        fmpost[f"ifkomasu{idx}"] = row.get("koma", "")
+        fmpost[f"iftanka{idx}"] = row.get("tanka", "")
+        fmpost[f"ifkingaku{idx}"] = _kingaku(row)
+    slot = 1
+    for r in resolved:
+        while slot in used_if3_indexes:
+            slot += 1
+        if slot > 5:
+            return json.dumps({"ok": False,
+                               "error": "講習会費行が5行を超えました（既存分含む）"},
+                              ensure_ascii=False)
+        idx = 40 + slot
+        fmpost[f"ifcb{idx}"] = ""
+        fmpost[f"ifminus{idx}"] = "0"
+        fmpost[f"iftext{idx}"] = "0"
+        fmpost[f"ifbsel{idx}"] = r["bsel"]
+        fmpost[f"ifrsel{idx}"] = r["ryokin"]
+        fmpost[f"ifkomasu{idx}"] = str(r["koma"])
+        fmpost[f"iftanka{idx}"] = str(r["tanka"])
+        fmpost[f"ifkingaku{idx}"] = str(r["kingaku"])
+        used_if3_indexes.add(slot)
+        slot += 1
+
+    resp = sess.post(f"{BASE_URL}/service/IEB061.wpp", data=fmpost)
+    html = resp.content.decode("utf-8", errors="replace")
+    err_m = re.search(r'alert\("([^"]+)"\)', html)
+    saved = "SHIME" + seitocd in html or "生徒が登録されました" in html or "確定しました" in html
+
+    return json.dumps({"ok": bool(saved) and not err_m,
+                       "seitocd": seitocd, "grade": grade,
+                       "shoriym": shoriym_yyyymm, "billym": billym_yyyymm,
+                       "resolved": resolved, "bcomment": bcomment,
+                       "total": sum(r["kingaku"] for r in resolved),
+                       "response_status": resp.status_code,
+                       "response_bytes": len(resp.content),
+                       "error": err_m.group(1) if err_m else None,
+                       "url": resp.url},
+                      ensure_ascii=False, indent=2)
+
+
+_IEB250_GRADE_CODE = {
+    "小1": "07", "小2": "08", "小3": "09", "小4": "10", "小5": "11", "小6": "12",
+    "中1": "13", "中2": "14", "中3": "15",
+    "高1": "16", "高2": "17", "高3": "18", "成人": "19",
+}
+
+
+@mcp.tool()
+def sks_gaibu_hidden_list(
+    taishoym: str = "",
+    name: str = "",
+    grade: str = "",
+    include_visible: bool = True,
+) -> str:
+    """IEB250「月謝台帳出力」の裏で、外部生名簿（非表示扱いも含む）を取得する。
+
+    通常の <code>sks_student_list(kubun="gaibu")</code>（IEB040 経由）では
+    退塾中の講習会生など「非表示」扱いの外部生は取れない。IEB250 の Ajax
+    エンドポイントで <code>notaijuku=1</code>（外部生モードでは「非表示も含む」）
+    を叩くと隠された外部生コードを含む名簿が取れる。
+
+    再塾生の「隠れ外部生コード」（例：三原歩夢 22G060）を機械的に発見する用途。
+
+    Args:
+        taishoym: 対象年月 YYYY/MM or YYYYMM。省略時は当月。
+        name: 氏名の部分一致フィルタ（例 "三原"）。空なら全件。
+        grade: 学年ラベル（"中3"/"高2" 等）。空なら全学年。
+        include_visible: True（既定）=可視の外部生も含める / False=非表示のみ差分抽出
+
+    Returns:
+        JSON: {ok, taishoym, count_all, count_hidden_only, students:[{seitocd, grade, name, hidden}]}
+    """
+    if not taishoym:
+        taishoym = datetime.now().strftime("%Y/%m")
+    ym_str = taishoym.replace("/", "")
+    if not re.match(r"^\d{6}$", ym_str):
+        return json.dumps({"ok": False, "error": f"invalid taishoym: {taishoym}"},
+                          ensure_ascii=False)
+
+    grade_code = ""
+    if grade:
+        g = _IEB250_GRADE_CODE.get(grade)
+        if g is None:
+            return json.dumps({"ok": False, "error": f"unknown grade: {grade}",
+                               "hint": f"valid: {list(_IEB250_GRADE_CODE.keys())}"},
+                              ensure_ascii=False)
+        grade_code = g
+
+    sess = _get_session()
+    sess.get(f"{BASE_URL}/service/IEB250.wpp")
+
+    def _fetch(notaijuku: str) -> list[dict]:
+        p = f"VIEW|{ym_str}|1|{grade_code}|{notaijuku}|0|0"
+        r = sess.get(f"{BASE_URL}/service/IEB250.wpp",
+                     params={"cmd": "ax", "param": p})
+        text = r.content.decode("utf-8", errors="replace")
+        rows = []
+        pattern = re.compile(
+            r'<TR[^>]*onclick=[\'"]sel0\(this,"([^"]+)","[^"]*"\)[^>]*>\s*'
+            r'<TD>([^<]+)</TD>\s*<TD>[^<]+</TD>\s*<TD>([^<]+)</TD>',
+            re.DOTALL,
+        )
+        for m in pattern.finditer(text):
+            rows.append({"seitocd": m.group(1), "grade": m.group(2).strip(),
+                         "name": m.group(3).strip()})
+        return rows
+
+    all_rows = _fetch("1")
+    visible_only = _fetch("0")
+    visible_codes = {r["seitocd"] for r in visible_only}
+
+    students = []
+    for row in all_rows:
+        is_hidden = row["seitocd"] not in visible_codes
+        if not include_visible and not is_hidden:
+            continue
+        if name and name not in row["name"]:
+            continue
+        row["hidden"] = is_hidden
+        students.append(row)
+
+    return json.dumps({
+        "ok": True, "taishoym": taishoym,
+        "count_all": len(all_rows),
+        "count_hidden_only": len(all_rows) - len(visible_only),
+        "students": students,
+    }, ensure_ascii=False, indent=2)
 
 
 # --- Entry point ---

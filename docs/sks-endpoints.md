@@ -123,7 +123,7 @@ window.name が "SKSMAIN" の場合は同タブ遷移に切り替わる仕様。
 | 入金内訳一覧 | `IEB260.wpp` |
 | 未収金内訳明細 | `IEB220.wpp` |
 | 月謝台帳 | `IEB190.wpp` |
-| 月謝台帳出力 | `IEB250.wpp` |
+| 月謝台帳出力 | `IEB250.wpp` | ← MCPツール: `sks_gessyadaicho_export`
 | 請求取消処理 | `IEB300.wpp` |
 | 滞留債権処理 | `IEB310.wpp` |
 | コンビニ未入金一覧 | `IEV140.wpp` |
@@ -1942,6 +1942,47 @@ GUI では「確定」押下時に独自モーダル「コンビニ伝票発行�
 
 ### アクションボタン
 検索 / 表示 / 前月 / 次月 / 前生徒CD / 次生徒CD / Excel出力 / クリア / 終了
+
+## 月謝台帳出力 (`/service/IEB250.wpp`)
+
+複数生徒の月謝台帳を Excel ファイルにまとめて出力する画面。MCPツール `sks_gessyadaicho_export` で自動化済み（月謝＝げっしゃ・gessya）。
+
+### ページ構造
+フォーム2つ：
+- `formmain` (action=`IEB250.wpp`, mode=view): 区分/対象年月/学年/退塾フラグの設定と生徒一覧の表示
+- `fmp` (action=`IEB250.wpp?excel`, mode=print): 選択済み生徒コード(`s`=カンマ区切り)で Excel 出力
+
+### データ取得は xmlloads (Ajax)
+画面の「表示」ボタンは `doreload()` を呼び、`xmlloads(0, "layer1", param)` で生徒一覧を Ajax 取得する。
+Pythonからは以下で直接取得可能:
+```
+GET /service/IEB250.wpp?cmd=ax&param=VIEW|YYYYMM|0||1|0|0
+```
+- param 形式: `VIEW|YYYYMM|区分(0:内/1:外)|grade|notaijuku(0/1)|sortv1|sortv2`
+- 事前に `GET /service/IEB250.wpp` でセッション確立が必要
+- レスポンスから生徒コードを `sel0(this,&quot;NNNNNN&quot;,...)` のパターンで抽出
+
+### Excel 出力エンドポイント
+```
+POST /service/IEB250.wpp?excel
+data = { "mode": "print", "taishoym": "YYYYMM", "s": "260006,260002,..." }
+```
+- `s` は出力対象の生徒コードをカンマ区切りで（GUI の「＞＞」で右側リストに移したものに相当）
+- レスポンス Content-Type: `application/vnd.ms-excel;charset=utf-8` だが **中身は HTML（Excel互換）**。openpyxl ではなく BeautifulSoup でパース可能。
+
+### imtaishoym の意味（重要）
+`imtaishoym` は**12ヶ月表示窓の開始月**。指定月から12ヶ月分だけが表に出る。
+入会時(過去)の請求を見たければ**入会月を指定**する。現在月で指定するとそれ以前の請求は窓外で見えない。
+
+### 出力Excel(HTML)の構造
+1ファイル1シート、生徒ごとにブロックが並ぶ:
+- ヘッダテーブル: `生徒番号 | 'NNNNNN | 氏名 【学年】`
+- 月別表: ラベル列が縦に21行（入会金/授業料/諸経費/維持管理費/基礎教材費/別途教材費/テスト費/その他/講習会/講習会費/テキスト代/消費税/請求計/ワイドネット/カード/振込/入金計/滞留債権計/残高計/返金）
+- 月ヘッダ行: `YYYY年MM月 ×12 | 合計`
+- 続いて 21行の数値行が同順で並ぶ
+
+### アクションボタン（GUI）
+表示 / ＞ / ＞＞ / ＜ / ＜＜ / Excel出力 / クリア / 終了
 
 ## BCS視聴状況一覧 (`/service/IEB440.wpp`)
 

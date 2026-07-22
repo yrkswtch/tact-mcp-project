@@ -261,6 +261,77 @@ GUI 操作は `sks_convert_gaibu_to_internal()` MCP ツールで完全再現で�
 - 登録: 通常の `cmd=regist` POST に `gaibuseicd` を含める。`premshubetsu=4 / premreason=2` で YSPC ダイアログを肩代わり
 - 詳細は `sks-endpoints.md` の「外部生 → 内部生 取り込み」セクション参照
 
+## 生徒登録 (IEB010) — 履歴系フィールドの構造的破壊防止 (PRECAMV/campaign 対称化)
+
+**2026-07-23 確立。file8 の従来分析 (A)(B)(C)(D) は全て誤りで、真犯人はこれ。**
+
+### 症状
+
+MCP `sks_internal_update_fields` で `biko` 等の無関係フィールドを更新しただけで、`TBFNYUKAIKINJOHO` の `KYANSHUBETSU` / `RIYU` / `PRECAMV`（キャンペーン履歴）が空に上書きされる。新規入塾直後の生徒で頻発、既存生徒では発生しない、という非対称性があった。
+
+### サーバー側判定ロジック（実測確定）
+
+IEB010 の `cmd=regist` ハンドラは payload 内の以下 2 フィールドを単純比較する:
+
+- `PRECAMV`  … サーバーが form 生成時に JS で埋め込む**現 DB 値**
+- `campaign` … `<select>` の selected option の value（**新値**、ユーザーが選択したキャンペーン）
+
+判定は `PRECAMV != campaign` なら「変更あり」→ `UPDATE TBFNYUKAIKINJOHO SET KYANSHUBETSU=?, RIYU=?, PRECAMV=?` を発火。`==` なら no-op。
+
+### なぜ破壊されるか
+
+MCP パーサ `_ieb010_parse_form` は HTML の value 属性だけを見て、JS 実行後の値は知らない。新規入塾直後の生徒（例: 岡田空優 260015・2026-07-22 入塾）では:
+
+- `<input name="PRECAMV">` の初期 value=`""`（JS 実行前）
+- `<select name="campaign">` の selected option value=`""`
+
+だが、DB 上の実 PRECAMV は "10" が入っている（事務員が過去に登録）。パーサはこの 2 フィールドをバラバラに拾って `PRECAMV="10", campaign=""` を送信 → サーバー「10→空 に変更」判定 → **DB を空に UPDATE = 破壊**。
+
+（既存生徒の場合、form 生成時に PRECAMV 側にも実値が入るため対称性が偶然保たれ、破壊されない。）
+
+### 実証記録（2026-07-23、岡田空優 260015）
+
+MCP API で破壊 → 復元を実演:
+
+```python
+# 破壊
+sks_internal_update_fields('260015', {'PRECAMV':'10','campaign':'','txtriyu1':''})
+# → txtriyu1='' / PRECAMV=''
+
+# 復元
+sks_internal_update_fields('260015', {'PRECAMV':'','campaign':'10','txtriyu1':'夏期チラシ'})
+# → txtriyu1='夏期チラシ' / PRECAMV='10'
+```
+
+### 対策: `_protect_ieb010_history()` による対称化
+
+`server.py` に `_IEB010_HISTORY_MIRROR_PAIRS = [("PRECAMV", "campaign")]` と保護関数を定義し、`sks_internal_update_fields` / `sks_convert_gaibu_to_internal` / `sks_naibusei_register_from_inquiry` の POST 直前で呼び出す:
+
+```python
+def _protect_ieb010_history(data: dict, user_fields: dict) -> None:
+    for cur_key, new_key in _IEB010_HISTORY_MIRROR_PAIRS:
+        if cur_key in user_fields or new_key in user_fields:
+            continue  # ユーザーが明示指定 → エスケープハッチ、そのまま通す
+        data[new_key] = data.get(cur_key, "")
+```
+
+これで:
+- 通常の biko/氏名/住所等の更新 → 必ず `PRECAMV == campaign` になり **サーバーが no-op**、履歴は**構造的に壊せない**
+- ユーザーが `fields={"campaign": "10"}` を明示指定した時だけ **意図的操作として通る**
+
+### 回帰テスト（2026-07-23）
+
+| Test | 対象 | 結果 |
+|------|------|------|
+| 岡田 biko no-op | txtriyu1 / PRECAMV 保持 | PASS |
+| 中田 biko no-op | 対照実験 | PASS |
+| 明示 campaign 指定 | エスケープハッチ | PASS |
+
+### 関連する副次修正
+
+- `entprice` (入会金) が JS プレースホルダ `getEntprice()` で空になる件（別バグ、ORA-00936 で E00002）は POST 直前に `if not data.get("entprice"): data["entprice"] = "0"` で補完
+- `_IEB010_DISABLED_INCLUDE` は保守的維持（disabled=true な履歴系 field が現れた場合の予備策）
+
 ## PCS系統図 (PcsMenu.do)
 
 ### 処理状態インジケータ
