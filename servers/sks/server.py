@@ -1859,6 +1859,13 @@ def _ieb010_parse_form(html: str):
         if inp.has_attr("disabled") and name not in _IEB010_DISABLED_INCLUDE:
             continue
         itype = (inp.get("type") or "text").lower()
+        # button/submit/reset/image は GUI が form.submit() で送らない (クリックされて
+        # いない限り送信対象外)。これを含めるとサーバー Perl が submitButtonName='検索'
+        # を見て「これは検索リクエスト」と誤判定し、cmd=regist を silent にスキップして
+        # DB を更新しない。レスポンスには送信値を echo するので反映されたように見える。
+        # 2026-07-23 岡田空優260015 の学校/姉更新で発覚。
+        if itype in ("button", "submit", "reset", "image"):
+            continue
         v = inp.get("value", "") or ""
         if itype == "checkbox":
             # GUI の挙動: checked のものは value(または "on")、未チェックは送らない。
@@ -2047,8 +2054,10 @@ def sks_internal_update_fields(seitocd: str, fields: dict) -> str:
             "before": before,
         }, ensure_ascii=False, indent=2)
 
-    # 4. 反映確認
-    after_data, _ = _ieb010_parse_form(html2)
+    # 4. 反映確認: POST レスポンスの form value は「送信値の echo」を含むため、
+    # サーバーが silent に SET をスキップしても "OK" と誤判定される。真の反映は
+    # 別 GET で fresh reload して DB 値を取得する必要がある (2026-07-23 岡田君で発覚)。
+    after_data, _ = _ieb010_load(seitocd)
     after = {}
     if after_data is not None:
         after = {k: after_data.get(k, "") for k in fields.keys()}

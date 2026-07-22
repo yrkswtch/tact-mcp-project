@@ -261,6 +261,72 @@ GUI 操作は `sks_convert_gaibu_to_internal()` MCP ツールで完全再現で�
 - 登録: 通常の `cmd=regist` POST に `gaibuseicd` を含める。`premshubetsu=4 / premreason=2` で YSPC ダイアログを肩代わり
 - 詳細は `sks-endpoints.md` の「外部生 → 内部生 取り込み」セクション参照
 
+## 生徒登録 (IEB010) — `submitButtonName` 混入による silent 失敗 (2026-07-23 確立)
+
+### 症状
+
+`sks_internal_update_fields` が `shogaku` / `chugaku` / `r3系` 等の一部フィールドで実 DB に反映されないのに `result="OK"` を返す silent 失敗。中田(既存生)の biko 等は通るのに、岡田(新規入塾)で学校・姉が silent に SET されない現象。
+
+### 真犯人
+
+MCP パーサは `<input type="button">` / `<input type="submit">` も含めて全 input を payload に含めていた。form 内には:
+
+- `<input type="submit" name="submitButtonName" value="検索">` （生徒番号検索/表示ボタン）
+- `<input type="button" name="bnToiawaseKidou" value="問合せ管理起動">` 等の GUI ボタン群
+
+があり、MCP パーサはこれらの `name=value` を全部 payload に含めていた。特に `submitButtonName='検索'` を送ると、サーバー Perl は `cmd=regist` を無視して「検索リクエスト」ルートに処理を流し、UPDATE を silent にスキップする。**レスポンスには送信値を form value 属性として echo するので、パーサで after を parse しても「反映された」と誤判定される（echo バグ）**。
+
+### 実測 diff (2026-07-23、岡田空優 260015)
+
+GUI 経由の成功 POST body (108 フィールド) と MCP パーサ出力 (125 フィールド) の差分:
+
+**MCP のみに含まれる 17 フィールド（GUI が送っていない）**:
+- `submitButtonName='検索'` ← 真犯人
+- `bnToiawaseKidou / bnToiawaseSearch / bnToiawaseSearch2 / bnGaibuTorikomi / bnGaibuSearch / bnTorikomi / bnBankSearch / bnbaddr / bnjugyot / bnUpdateCardInfo`（全部 `type="button"`）
+- `torikomicd / torikomikyoshitsu / YubinCD / ybdefkigo1 / ybdefkigo2 / ac_ebrand2`
+
+GUI では `form.submit()` の仕様上、クリックされていない button/submit/reset/image は送信対象外。
+
+### 対策 (server.py)
+
+`_ieb010_parse_form` で以下の type を除外:
+
+```python
+if itype in ("button", "submit", "reset", "image"):
+    continue
+```
+
+さらに `sks_internal_update_fields` の反映確認を **fresh reload** に変更（echo 対策）:
+
+```python
+# 旧: after_data, _ = _ieb010_parse_form(html2)  # POST レスポンスの echo
+# 新: after_data, _ = _ieb010_load(seitocd)     # 別 GET で実 DB 値
+```
+
+### 実証: API のみで削除 → 復元 (2026-07-23、岡田 260015)
+
+```python
+# 削除
+sks_internal_update_fields('260015', {
+    'shogaku': '', 'hshogaku': '', 'chugaku': '', 'hchugaku': '',
+    'r3zokugara': '0', 'r3name': '', 'r3old': '', 'r3work': '',
+})
+# 復元
+sks_internal_update_fields('260015', {
+    'shogaku': '新郷小学校', 'hshogaku': '0000001103',
+    'chugaku': '川口東中学校', 'hchugaku': '0000002101',
+    'r3zokugara': '06', 'r3name': '岡田 心愛', 'r3old': '17', 'r3work': '川口北高校',
+})
+```
+
+両方とも `result=OK`、fresh reload で実 DB 反映確認。キャンペーン系 (`PRECAMV / txtriyu1`) は対称化で保護され不変。
+
+### 教訓
+
+- **form の value 属性を素で拾うだけでは POST payload として不正確**。GUI の `form.submit()` セマンティクスを模倣する必要がある。button/submit/reset/image は除外。
+- **POST レスポンスの form value は「送信値の echo」を含む**。反映確認は必ず別 GET で fresh reload。
+- 症状（「学校 SET されない」）から仮説（「学校マスター検索経由必須」等）を立てる前に、**GUI 成功 POST body と MCP payload を diff することが最短経路**（work_rules file17）。
+
 ## 生徒登録 (IEB010) — 履歴系フィールドの構造的破壊防止 (PRECAMV/campaign 対称化)
 
 **2026-07-23 確立。file8 の従来分析 (A)(B)(C)(D) は全て誤りで、真犯人はこれ。**
