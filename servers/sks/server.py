@@ -2135,15 +2135,25 @@ _IF_RIREKI_LABEL = {
 }
 
 
-def _student_record(seitocd: str) -> dict | None:
-    """名簿一覧(IEB030)から生徒コード一致のレコードを返す。退塾者も含む。"""
+def _student_record(seitocd: str, include_taijuku: bool = False) -> dict | None:
+    """名簿一覧(IEB030)から生徒コード一致のレコードを返す。
+
+    Args:
+        seitocd: 生徒コード
+        include_taijuku: True で退塾者も検索対象に含める(再塾処理 rireki=04 用)。
+            デフォルトは False(在籍者のみ) — sks_jugyo_register で退塾生に誤って
+            新規コースを入れる事故を防ぐガード。
+    """
     s = _get_session()
     s.get(f"{BASE_URL}/service/IEB030.wpp")
-    r = s.post(f"{BASE_URL}/service/IEB030.wpp", data={
+    data = {
         "mode": "if", "cols": _COLS_NAIBU, "selseitolist": "",
         "seitokm": "", "seitosm": "", "seitograde": "",
         "listcount": "", "seitokb": "naibu",
-    })
+    }
+    if not include_taijuku:
+        data["taijuku"] = "1"  # 退塾者除外(既定)
+    r = s.post(f"{BASE_URL}/service/IEB030.wpp", data=data)
     html = r.content.decode("utf-8", errors="replace")
     for st in _parse_student_table(html):
         code = (st.get("生徒ｺｰﾄﾞ") or st.get("生徒コード") or "").strip()
@@ -2308,8 +2318,15 @@ def sks_jugyo_register(
 ) -> str:
     """SKS内部生の受講(月謝コース)を登録する。GUIの「授業登録」相当。
 
-    受講履歴(通常授業開始 等)を追加し、コース情報(コース名/回数/科目)を登録する。
-    金額は 単価×回数−割引 で自動算出する。
+    受講履歴(通常授業開始 / 再塾 / コース変更 / 選択科目変更)を追加し、コース情報
+    (コース名/回数/科目)を登録する。金額は 単価×回数−割引 で自動算出する。
+
+    ・rireki='02' 通常授業開始: 新規入会生の初コース登録(在籍者のみ)
+    ・rireki='04' 再塾: 退塾済み生徒の復塾処理(退塾者名簿から自動検索。退塾日は履歴として残り、
+                    再塾日が新たに設定される)
+    ・rireki='05' コース変更: 学年進級・週回数変更等(履歴行→新通番→現学年コース表)
+    ・rireki='06' 選択科目変更
+
     学年が進級した既存生のコース変更(rireki=05)は、履歴行を先に登録して新通番を発番させ、
     その新通番のコース表から現学年の単価を取得して算出する(詳細: docs/sks-failures.md 失敗1)。
 
@@ -2329,9 +2346,15 @@ def sks_jugyo_register(
         allow_existing: True=既に科目①が登録済みでも続行（再登録/変更時）
     """
     s = _get_session()
-    rec = _student_record(seitocd)
+    # rireki=04(再塾) の時は 退塾者名簿も検索対象に含める(復塾処理)。
+    # 他の rireki は 在籍者のみ(誤って退塾生に新規コースを入れる事故を防ぐ)。
+    rec = _student_record(seitocd, include_taijuku=(rireki == "04"))
     if rec is None:
-        return json.dumps({"result": "NG", "error": f"生徒コード {seitocd} が名簿に見つかりません"},
+        hint = ""
+        if rireki != "04":
+            hint = "（退塾済み生徒の場合は rireki='04'(再塾)を指定してください）"
+        return json.dumps({"result": "NG",
+                           "error": f"生徒コード {seitocd} が名簿に見つかりません{hint}"},
                           ensure_ascii=False, indent=2)
     grade = (rec.get("学年", "") or "").strip()
     existing = (rec.get("科目①", "") or "").strip()
