@@ -819,6 +819,7 @@ def sks_gaibusei_register(
 def sks_gaibusei_register_from_inquiry(
     inquiry_no: str,
     kana: str,
+    grade: str = "",
     birth: str = "",
     sex: str = "",
     memo: str = "",
@@ -829,15 +830,18 @@ def sks_gaibusei_register_from_inquiry(
     """SKS問合せデータから外部生登録(IEB040)にコピーして登録する。
 
     問合せ管理から「検索→選択」で遷移するのと同じ動作。
-    生徒氏名・保護者氏名・学年・住所・電話番号は問合せから自動転記される。
-    フリガナ・性別・生年月日・備考だけ補完する。
+    生徒氏名・保護者氏名・住所・電話番号は問合せから自動転記される。
+    学年は IEB040 mode=toiawase の GET レスポンスに含まれないことが多い(sks_pcs.html file18)
+    ため、**必ず grade を明示指定する**。指定なしで転記も空の場合は hard fail する。
 
-    必須: kana(フリガナ)。kana が空だとサーバー側バリデーションで弾かれて
-    UNCERTAIN になる。生年月日(birth)は IEB040 側では必須ではなく**任意**(空可)。
+    必須: kana(フリガナ) と grade(学年)。kana が空だとサーバー側バリデーションで弾かれる。
+    grade は転記漏れによる在籍集計・月謝台帳漏れ事故を防ぐため呼び出し側で明示。
 
     Args:
         inquiry_no: SKS問合せNO(例: "1184")
         kana: 生徒フリガナ(全角/半角カナ/ひらがな可)。**必須**。
+        grade: 学年(例: "中学3年", "高校2年", "小学4年", "成人")。**必須**（空だと転記値が
+               空でも hard fail）。sks_pcs.html file18 参照。
         birth: 生年月日(YYYY/MM/DD)。任意(空可)。
         sex: 性別("女"/"男"/"1"/"0"。空なら男)
         memo: 備考(転記先に残る)
@@ -911,6 +915,28 @@ def sks_gaibusei_register_from_inquiry(
             "error": "Failed to load inquiry data — is the inquiry_no correct?",
             "inquiry_no": inquiry_no,
         }, ensure_ascii=False)
+
+    # grade 明示指定なら転記値を上書き。指定なしで転記も空なら hard fail(file18)。
+    if grade:
+        grade_key = _normalize_grade_key(grade)
+        if grade_key not in _GRADE_TO_GAIBUSEI_CODE:
+            return json.dumps({
+                "result": "NG",
+                "error": f"unknown grade: {grade}",
+                "hint": "'中学3年', '高校2年', '小学4年', '成人', 'その他' etc.",
+            }, ensure_ascii=False)
+        seitograde = _GRADE_TO_GAIBUSEI_CODE[grade_key]
+    if not seitograde:
+        return json.dumps({
+            "result": "NG",
+            "error": "seitograde が問合せから転記されず grade も未指定です。grade を明示してください。",
+            "hint": "sks_pcs.html file18 参照 — 空grade登録は在籍集計・月謝台帳から漏れる",
+            "inquiry_no": inquiry_no,
+        }, ensure_ascii=False)
+
+    # postalcd の再フォーマット汚染防止(file8): impostalcd から '-' を除いた値を送る
+    if impostalcd:
+        postalcd = impostalcd.replace("-", "")
 
     data = {
         "cmd": "regist",
