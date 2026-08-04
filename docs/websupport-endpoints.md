@@ -292,6 +292,8 @@ detail.php?iid={ID} → POST itemCheckOfAjax.php → POST detailItemAdd.php
 - POST `/sfm/ie-class/management/student/updateCardRegist.php` — カードパスワード更新
   - `card_password`, `card_password_conf`, `sid`
 
+**生徒基本情報 で 教室側 が 直接 更新可能な form は detail.php の 上記 3つ が 全て** — 氏名/カナ/学年/生徒区分 等 は SKS 側で 変更 → SFM 側に 自動反映 される 想定（詳細画面 に これらの update form は 存在しない）。
+
 ### 生徒詳細フィールド
 - 生徒名、生徒名（カナ）、学年、生徒区分、更新日時
 - 生徒ID（セーフティカードID）、パスワード
@@ -300,6 +302,20 @@ detail.php?iid={ID} → POST itemCheckOfAjax.php → POST detailItemAdd.php
 ### 注意: SKS ⇔ SFM は連携なし
 - SKS 内部生登録 (IEB010) で SFM 側の生徒レコードは自動生成される（生徒ID = `555{教室CD}{SKS生徒コード}`）
 - ただし **保護者メール（`hogoshamail`）は SKS→SFM に自動連携しない**。SFM 側で updateMail1Regist.php を叩いて別途登録が必要
+
+### 出席簿 は 教室側 での 事後修正 UI なし
+- GET `/sfm/ie-class/attendance/student/detail.php?sid={N}` — 生徒別出席履歴（**表示専用、form 0**）
+- POST `/sfm/ie-class/attendance/student/list.php` — 一覧の 検索フィルタ（`card_number`, `student_name`, `student_name_kana`, `student_grade`, `student_type`）
+- GET `/sfm/ie-class/attendance/testCard/detail.php` — 打刻テスト履歴（**表示専用、form 0**）
+- **打刻記録の 修正 form は SFM UI 上 一切 なし** — 記録は 一次データ（カード打刻 / 打刻テスト）に依存、教室側での 事後修正 は 提供されていない
+
+### カード管理（用途頻度 低、tool 未実装）
+- GET `/sfm/ie-class/management/card/spot/setStudent.php` — 外部生カード割当画面
+- POST `/sfm/ie-class/management/card/spot/setStudentRegist.php` — 外部生カード割当保存
+  - `spot_student`（radio、カード枚数分の 選択肢）
+- GET `/sfm/ie-class/management/card/test/detail.php` — テストカード管理画面
+- POST `/sfm/ie-class/management/card/test/updateRegist.php` — テストカード通知メール登録
+  - `mail_address`, `mail_address_conf`, `cid`（cid = カードID）
 
 ### カード管理
 - GET `/sfm/ie-class/management/card/spot/setStudent.php` — 外部生カード管理
