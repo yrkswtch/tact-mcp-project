@@ -609,6 +609,43 @@ def sfm_student_update_mail(sid: str, email: str, slot: str = "main") -> str:
 
 
 @mcp.tool()
+def sfm_student_update_card(sid: str, password: str) -> str:
+    """SFM 生徒詳細のカードパスワード（打刻用）を更新する。
+
+    生徒が入退室時にセーフティカードで打刻する際のパスワード。
+    保護者アプリからの閲覧にも使う。デフォルトは生年月日の 月日 4桁 (MMDD)。
+
+    Args:
+        sid: SFM 生徒 sid (sfm_student_list で取得)
+        password: 新パスワード (通常は4桁数字。空文字列で削除)
+    """
+    s = _get_sfm_session()
+    body = {
+        "card_password": password,
+        "card_password_conf": password,
+        "sid": sid,
+    }
+    s.post(
+        f"{SFM_URL}/sfm/ie-class/management/student/updateCardRegist.php",
+        data=body,
+    )
+    # 反映確認
+    r2 = s.get(
+        f"{SFM_URL}/sfm/ie-class/management/student/detail.php",
+        params={"sid": sid},
+    )
+    soup = BeautifulSoup(r2.content.decode("utf-8", errors="replace"), "html.parser")
+    inp = soup.find("input", {"name": "card_password"})
+    after = (inp.get("value") or "").strip() if inp else ""
+    return json.dumps({
+        "result": "OK" if after == password else "NG",
+        "sid": sid,
+        "password": password,
+        "after": after,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
 def sfm_inbox(page: int = 1) -> str:
     """連絡帳の受信箱一覧を取得する。
 
