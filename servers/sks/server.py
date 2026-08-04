@@ -222,6 +222,13 @@ def sks_student_list(
     # POSTでiframe内のデータを取得
     r = s.post(f"{BASE_URL}/service/IEB030.wpp", data=data)
     html = r.content.decode("utf-8", errors="replace")
+    # ログイン画面へredirect検出 (session切れ時に SKS は login form を返す)。
+    # 既存 sks_internal_update_fields (line 2019) と同じ検出パターン。
+    if "passwd" in html and "kyoshitsucd" in html:
+        return json.dumps(
+            {"result": "NG", "error": "session expired (login redirect). Call sks_relogin first."},
+            ensure_ascii=False, indent=2,
+        )
     students = _parse_student_table(html)
 
     if grade:
@@ -244,6 +251,13 @@ def sks_student_export() -> str:
     s = _get_session()
     r = s.get(f"{BASE_URL}/service/IEB030.wpp")
     html = r.content.decode("utf-8", errors="replace")
+    # ログイン画面へredirect検出 (session切れ時に SKS は login form を返す)。
+    # 既存 sks_internal_update_fields (line 2019) と同じ検出パターン。
+    if "passwd" in html and "kyoshitsucd" in html:
+        return json.dumps(
+            {"result": "NG", "error": "session expired (login redirect). Call sks_relogin first."},
+            ensure_ascii=False, indent=2,
+        )
     students = _parse_student_table(html)
 
     return json.dumps(
