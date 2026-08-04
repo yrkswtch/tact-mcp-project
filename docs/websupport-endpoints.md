@@ -285,11 +285,21 @@ detail.php?iid={ID} → POST itemCheckOfAjax.php → POST detailItemAdd.php
 ### 生徒基本情報
 - GET `/sfm/ie-class/management/student/listPre.php` → `list.php?page={N}` — 生徒一覧
 - GET `/sfm/ie-class/management/student/detail.php?sid={N}` — 生徒詳細
+- POST `/sfm/ie-class/management/student/updateMail1Regist.php` — メイン通知メール更新
+  - `parent_mail_address_1`, `parent_mail_address_1_conf`, `sid`
+- POST `/sfm/ie-class/management/student/updateMail2Regist.php` — サブ通知メール更新
+  - `parent_mail_address_2`, `parent_mail_address_2_conf`, `sid`
+- POST `/sfm/ie-class/management/student/updateCardRegist.php` — カードパスワード更新
+  - `card_password`, `card_password_conf`, `sid`
 
 ### 生徒詳細フィールド
 - 生徒名、生徒名（カナ）、学年、生徒区分、更新日時
 - 生徒ID（セーフティカードID）、パスワード
 - メイン通知メールアドレス、サブ通知メールアドレス、メールエラー状況
+
+### 注意: SKS ⇔ SFM は連携なし
+- SKS 内部生登録 (IEB010) で SFM 側の生徒レコードは自動生成される（生徒ID = `555{教室CD}{SKS生徒コード}`）
+- ただし **保護者メール（`hogoshamail`）は SKS→SFM に自動連携しない**。SFM 側で updateMail1Regist.php を叩いて別途登録が必要
 
 ### カード管理
 - GET `/sfm/ie-class/management/card/spot/setStudent.php` — 外部生カード管理

@@ -559,6 +559,56 @@ def sfm_student_detail(sid: str) -> str:
 
 
 @mcp.tool()
+def sfm_student_update_mail(sid: str, email: str, slot: str = "main") -> str:
+    """SFM 生徒詳細のメイン/サブ通知メールアドレスを更新する。
+
+    保護者宛の授業通知先メール。SKS 側の hogoshamail とは連携しないので、
+    このツールで SFM 側に直接登録する必要がある。
+
+    Args:
+        sid: SFM 生徒 sid (sfm_student_list で取得)
+        email: 登録するメールアドレス。空文字列で削除。
+        slot: "main" (メイン通知メール = updateMail1Regist.php) または
+              "sub"  (サブ通知メール  = updateMail2Regist.php)
+    """
+    if slot == "main":
+        endpoint = "updateMail1Regist.php"
+        field = "parent_mail_address_1"
+    elif slot == "sub":
+        endpoint = "updateMail2Regist.php"
+        field = "parent_mail_address_2"
+    else:
+        return json.dumps({"result": "NG", "error": f"unknown slot: {slot!r} (expected 'main' or 'sub')"},
+                          ensure_ascii=False, indent=2)
+
+    s = _get_sfm_session()
+    body = {
+        field: email,
+        f"{field}_conf": email,
+        "sid": sid,
+    }
+    s.post(
+        f"{SFM_URL}/sfm/ie-class/management/student/{endpoint}",
+        data=body,
+    )
+    # 反映確認: detail.php を再取得して input value を突合
+    r2 = s.get(
+        f"{SFM_URL}/sfm/ie-class/management/student/detail.php",
+        params={"sid": sid},
+    )
+    soup = BeautifulSoup(r2.content.decode("utf-8", errors="replace"), "html.parser")
+    inp = soup.find("input", {"name": field})
+    after = (inp.get("value") or "").strip() if inp else ""
+    return json.dumps({
+        "result": "OK" if after == email else "NG",
+        "sid": sid,
+        "slot": slot,
+        "email": email,
+        "after": after,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
 def sfm_inbox(page: int = 1) -> str:
     """連絡帳の受信箱一覧を取得する。
 

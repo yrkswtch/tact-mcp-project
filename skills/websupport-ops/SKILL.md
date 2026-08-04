@@ -48,6 +48,7 @@ WebSupportは **JIS X 0208** に限定されたEUC-JPを宣言しているのに
 ### SafetyMail (SSO経由)
 - `sfm_attendance_list` — 出席簿
 - `sfm_student_list` / `sfm_student_detail` — 生徒情報
+- `sfm_student_update_mail(sid, email, slot='main'|'sub')` — 保護者宛通知メール登録/更新（新規入会生徒の SFM メール登録用。SKS の hogoshamail とは連携しない）
 - `sfm_inbox` / `sfm_inbox_detail` — 連絡帳受信
 - `sfm_sendbox` / `sfm_sendbox_detail` — 連絡帳送信
 - `sfm_ganbaru_list` / `sfm_ganbaru_detail` — がんばるポイント
