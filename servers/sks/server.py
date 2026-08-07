@@ -1244,7 +1244,7 @@ if "example.internal" in SSK2_URL:
     # 未設定の場合は起動時警告のみ、実際のツール呼び出し時に明示エラー化する
     print(
         f"[SKS MCP WARN] SKS_SSK2_URL is the placeholder ({SSK2_URL!r}). "
-        f"PCS tools will fail. Add to your env file (SKS_ENV_FILE) e.g. 'SKS_SSK2_URL=http://ssk2.tacsvpn'.",
+        f"PCS tools will fail. Add to your env file (SKS_ENV_FILE) e.g. 'SKS_SSK2_URL=http://sks-ssk2.example.internal'.",
         file=sys.stderr,
     )
 _pcs_session_ready: bool = False
@@ -1256,7 +1256,7 @@ def _guard_ssk2_url() -> None:
         raise RuntimeError(
             "SKS_SSK2_URL is not configured (currently the default placeholder "
             f"{SSK2_URL!r}). PCS tools require a real SSK2 domain URL. "
-            "Add e.g. 'SKS_SSK2_URL=http://ssk2.tacsvpn' to your env file "
+            "Add e.g. 'SKS_SSK2_URL=http://sks-ssk2.example.internal' to your env file "
             "(pointed to by SKS_ENV_FILE) and restart the MCP process."
         )
 
@@ -4207,8 +4207,10 @@ def sks_wn_koshu_register(
         bcomment: YSPC請求明細コメント
         confirm: False(既定)=dry-run
     """
-    if not lines or len(lines) > 5:
-        return json.dumps({"ok": False, "error": "lines は1〜5件"}, ensure_ascii=False)
+    if len(lines) > 5:
+        return json.dumps({"ok": False, "error": "lines は最大5件"}, ensure_ascii=False)
+    if not lines and not misc_lines:
+        return json.dumps({"ok": False, "error": "lines か misc_lines の少なくとも一方が必要"}, ensure_ascii=False)
 
     sess = _get_session()
     r0 = sess.get(f"{BASE_URL}/service/IEB061.wpp")
@@ -4493,6 +4495,33 @@ def sks_gaibu_hidden_list(
         "count_hidden_only": len(all_rows) - len(visible_only),
         "students": students,
     }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sfl_gdls_delete_student(seitocd: str, name_hint: str = "") -> str:
+    """GDLS (キミスタ) 生徒管理 から SFL 登録生徒 を 削除.
+
+    Chrome を remote-debugging-port=9222 で 起動→CDP直叩き で
+    ログイン→検索→削除ボタン click→native confirm を 自動 accept.
+    翌月 以降 の SFL 自動立て を 停止する 目的.
+
+    Args:
+        seitocd: 生徒コード (例 "250006")
+        name_hint: 検索 用 の 氏名 or 姓 (例 "米田"). GDLS は 名前検索なので 実質必須.
+
+    Returns:
+        JSON: {"ok": True/False, "seitocd", "dialogs_seen", "still_present"}
+    """
+    from pathlib import Path as _Path
+    _gdls_path = _Path(__file__).parent / "gdls_client.py"
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gdls_client", str(_gdls_path))
+    if spec is None or spec.loader is None:
+        return json.dumps({"ok": False, "error": "gdls_client not found"}, ensure_ascii=False)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    result = mod.delete_student_sync(seitocd, name_hint)
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 # --- Entry point ---
