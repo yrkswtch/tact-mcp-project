@@ -42,14 +42,13 @@ tact-mcp-project/
 │   ├── sks-video/         # Video system SSO
 │   ├── sks-pcs/           # PCS test operations
 │   ├── websupport-ops/    # WebSupport operations
-│   ├── classroom-hp-update/ # Classroom website CMS
-│   └── nks-nippou/        # Daily report (NKS only)
+│   └── classroom-hp-update/ # Classroom website CMS
 ├── servers/               # MCP server implementations
 │   ├── sks/               # WEB-SKS student management
 │   ├── websupport/        # WEB SUPPORT inquiry management
 │   └── classroom-web-update/ # Schoolie-net CMS
 ├── docs/                  # Endpoint specs & GUI automation notes
-└── scripts/               # Utility scripts (NKS daily report)
+└── scripts/               # Utility scripts
 ```
 
 ## Manual Setup (without plugin)
