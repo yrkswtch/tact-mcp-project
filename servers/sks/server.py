@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
 import requests
@@ -60,6 +61,9 @@ CLASSROOM = os.environ.get("SKS_CLASSROOM", "{教室コード}")
 # --- Session management ---
 _session: requests.Session | None = None
 _login_failed: bool = False
+# セッション生存確認のキャッシュ（この秒数以内の再確認は省略して往復を減らす）
+_ALIVE_CACHE_SEC: float = 60.0
+_last_alive_check: float = 0.0
 
 
 def _cryptojs_aes_encrypt(plaintext: str, passphrase: str) -> tuple[str, str]:
@@ -93,16 +97,68 @@ def _sks_api(session: requests.Session, param: dict) -> dict:
     return r.json()
 
 
-def _get_session() -> requests.Session:
-    """ログイン済みセッションを取得"""
-    global _session, _login_failed
-    if _session is not None:
-        return _session
+def _is_login_page(html: str) -> bool:
+    """レスポンスがログイン画面か判定する。
+
+    セッションが切れると、サーバーはエラーでも空でもなく
+    「ログイン画面 HTML」を 200 OK で返す。これを実データと取り違えると
+    「偽の 0 件」になる（テーブルが無い → 空リストを parse → count:0）。
+    """
+    return "passwd" in (html or "") and "kyoshitsucd" in (html or "")
+
+
+def _session_alive(s: requests.Session) -> bool:
+    """軽いページを 1 回叩いて、セッションが生きているかを確かめる。"""
+    try:
+        r = s.get(f"{BASE_URL}/service/IEB030.wpp", timeout=30)
+    except requests.RequestException:
+        return False
+    return not _is_login_page(r.content.decode("utf-8", errors="replace"))
+
+
+def _get_session(force_check: bool = False) -> requests.Session:
+    """ログイン済みセッションを取得する。
+
+    行動の *前* に生存確認を行い、切れていればログインし直してから返す。
+    これにより呼び出し側は「必ず生きたセッション」を受け取れる。
+
+    以前は各ツールが受信 HTML を個別に検査する方式だったが、41 tool 中
+    14 tool にしか実装されておらず（しかも 3 流派混在）、未実装のツールを
+    踏むと「偽の 0 件」を実データとして返してしまっていた。
+    事後検査ではなく事前確認にすることで、
+      - 全ツールを 1 箇所で覆える（各ツールは従来どおり _get_session() を呼ぶだけ）
+      - 本番リクエストは 1 回しか飛ばないので、書き込み系の二重送信が起きない
+    という 2 点を同時に満たす。
+
+    Args:
+        force_check: True なら生存確認キャッシュを無視して必ず確認する
+    """
+    global _session, _login_failed, _last_alive_check
     if _login_failed:
         raise Exception(
             "Login previously failed. NOT retrying to avoid account lockout. "
             "Check SKS_ACCOUNT/SKS_PASSWORD and restart the MCP server."
         )
+
+    if _session is not None:
+        now = time.monotonic()
+        if not force_check and (now - _last_alive_check) < _ALIVE_CACHE_SEC:
+            return _session
+        if _session_alive(_session):
+            _last_alive_check = now
+            return _session
+        # 切れていた → 作り直す
+        _session = None
+
+    s = _login()
+    _session = s
+    _last_alive_check = time.monotonic()
+    return s
+
+
+def _login() -> requests.Session:
+    """新しいセッションを作ってログインする（生存確認は _get_session 側の責務）。"""
+    global _login_failed
 
     s = requests.Session()
     s.headers.update({
@@ -136,7 +192,6 @@ def _get_session() -> requests.Session:
         _login_failed = True
         raise Exception("Failed to access SKS menu after login")
 
-    _session = s
     return s
 
 
@@ -269,9 +324,10 @@ def sks_student_export() -> str:
 @mcp.tool()
 def sks_relogin() -> str:
     """SKSセッションをリセットして再ログインする。"""
-    global _session, _login_failed
+    global _session, _login_failed, _last_alive_check
     _session = None
     _login_failed = False
+    _last_alive_check = 0.0
     s = _get_session()
     return json.dumps({"result": "OK", "message": "Re-login successful"})
 
