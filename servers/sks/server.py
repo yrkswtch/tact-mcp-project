@@ -3198,6 +3198,91 @@ def _iev120_load(s: requests.Session) -> tuple[dict | None, list[dict]]:
     return meta, rows
 
 
+_CVS_UNPAID_COLS = [
+    "支払期限", "処理年月", "区分", "学年", "生徒", "請求区分",
+    "調整区分", "振込票発行日", "請求金額合計", "確定日", "送付先",
+]
+
+
+def _parse_cvs_list(html_text: str) -> list:
+    """IEV140/IEV250 の Ajax レスポンス（HTML断片）を行の辞書に変換する。
+
+    レスポンスは "<TABLE>...|<script>" の形で、'|' の前半が表本体。
+    タグは **大文字** (<TR>/<TD>) なので re.I を付けないと1件も取れない。
+    """
+    body = html_text.split("|")[0]
+    out = []
+    for tr in re.findall(r"<TR[^>]*>(.*?)</TR>", body, re.S | re.I):
+        tds = [
+            re.sub(r"<[^>]+>", "", td).replace(" ", " ").strip()
+            for td in re.findall(r"<TD[^>]*>(.*?)</TD>", tr, re.S | re.I)
+        ]
+        if not tds:
+            continue
+        row = dict(zip(_CVS_UNPAID_COLS, tds))
+        seito = row.get("生徒") or ""
+        if ":" in seito:
+            row["seitocd"], row["seitosm"] = seito.split(":", 1)
+        amt = (row.get("請求金額合計") or "").replace(",", "")
+        row["amount"] = int(amt) if amt.isdigit() else None
+        # 支払期限超過の行は class に 'red' が入る
+        out.append(row)
+    return out
+
+
+@mcp.tool()
+def sks_cvs_unpaid_list() -> str:
+    """IEV140 コンビニ未入金一覧を取得する（振込票を発行済みで未入金のもの）。
+
+    画面の「表示」ボタンは xmlloads(0,"IEV140if","VIEW") を呼ぶだけなので、
+    GUI を介さず ``GET /service/IEV140.wpp?cmd=ax&param=VIEW`` で同じ表が取れる。
+    ("IEV140if" は差し込み先の div id であって URL ではない)
+
+    Returns:
+        JSON: {result, count, total_amount, overdue_count, rows:[{支払期限, 処理年月,
+               区分, 学年, 生徒, seitocd, seitosm, 請求区分, 振込票発行日,
+               請求金額合計, amount, 確定日, overdue}, ...]}
+        overdue は支払期限が本日より前かどうか。
+    """
+    import datetime
+
+    s = _get_session()
+    s.get(f"{BASE_URL}/service/IEV140.wpp")
+    r = s.get(f"{BASE_URL}/service/IEV140.wpp", params={"cmd": "ax", "param": "VIEW"})
+    r.encoding = "utf-8"
+    rows = _parse_cvs_list(r.text)
+    today = datetime.date.today()
+    for row in rows:
+        try:
+            d = datetime.datetime.strptime(row.get("支払期限", ""), "%Y/%m/%d").date()
+            row["overdue"] = d < today
+        except ValueError:
+            row["overdue"] = None
+    return json.dumps({
+        "result": "OK",
+        "count": len(rows),
+        "total_amount": sum(x["amount"] for x in rows if x.get("amount")),
+        "overdue_count": sum(1 for x in rows if x.get("overdue")),
+        "rows": rows,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sks_cvs_paid_list() -> str:
+    """IEV250 コンビニ入金済一覧を取得する。取得方法は sks_cvs_unpaid_list と同じ。"""
+    s = _get_session()
+    s.get(f"{BASE_URL}/service/IEV250.wpp")
+    r = s.get(f"{BASE_URL}/service/IEV250.wpp", params={"cmd": "ax", "param": "VIEW"})
+    r.encoding = "utf-8"
+    rows = _parse_cvs_list(r.text)
+    return json.dumps({
+        "result": "OK",
+        "count": len(rows),
+        "total_amount": sum(x["amount"] for x in rows if x.get("amount")),
+        "rows": rows,
+    }, ensure_ascii=False, indent=2)
+
+
 @mcp.tool()
 def sks_cvs_issue_pending() -> str:
     """IEV120 コンビニ振込用紙発行依頼の発行待ち（および確定済み）一覧を取得。
