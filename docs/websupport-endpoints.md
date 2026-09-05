@@ -303,11 +303,25 @@ detail.php?iid={ID} → POST itemCheckOfAjax.php → POST detailItemAdd.php
 - SKS 内部生登録 (IEB010) で SFM 側の生徒レコードは自動生成される（生徒ID = `555{教室CD}{SKS生徒コード}`）
 - ただし **保護者メール（`hogoshamail`）は SKS→SFM に自動連携しない**。SFM 側で updateMail1Regist.php を叩いて別途登録が必要
 
-### 出席簿 は 教室側 での 事後修正 UI なし
-- GET `/sfm/ie-class/attendance/student/detail.php?sid={N}` — 生徒別出席履歴（**表示専用、form 0**）
+### 出席簿 — 個別出席・手動編集
+- GET `/sfm/ie-class/attendance/student/detail.php?sid={N}` — 生徒別出席情報（当日）。「手動編集」ボタンあり
 - POST `/sfm/ie-class/attendance/student/list.php` — 一覧の 検索フィルタ（`card_number`, `student_name`, `student_name_kana`, `student_grade`, `student_type`）
-- GET `/sfm/ie-class/attendance/testCard/detail.php` — 打刻テスト履歴（**表示専用、form 0**）
-- **打刻記録の 修正 form は SFM UI 上 一切 なし** — 記録は 一次データ（カード打刻 / 打刻テスト）に依存、教室側での 事後修正 は 提供されていない
+- GET `/sfm/ie-class/attendance/testCard/detail.php` — 打刻テスト（テストカード用、表示専用）
+- GET `/sfm/ie-class/attendance/student/record/list.php?sid={N}&date={YYYYMM}` — 生徒別 月間出席一覧（日別の入退室記録、「修正」ボタンあり）
+- GET `/sfm/ie-class/attendance/student/record/edit.php?sid={N}&adt={YYYYMMDD}` — **手動編集フォーム**（打刻の新規登録・修正）
+- POST `/sfm/ie-class/attendance/student/record/editRegist.php` — **打刻の登録・修正**
+  - `sid`（SFM生徒sid）, `adt`（日付 YYYYMMDD）
+  - `in_time_hh_1`, `in_time_mm_1` — 入室1（時:分）
+  - `out_time_hh_1`, `out_time_mm_1` — 退室1
+  - `in_time_hh_2`, `in_time_mm_2` — 入室2
+  - `out_time_hh_2`, `out_time_mm_2` — 退室2
+  - `in_time_hh_last`, `in_time_mm_last` — 入室(最終)
+  - `out_time_hh_last`, `out_time_mm_last` — 退室(最終)
+  - `memo` — メモ（textarea）
+  - `mail_send[send]` — メール通知（hidden=0 / checkbox=1、チェック時に保護者へ通知メール送信）
+  - `smt_editRegist` — 登録ボタン（type=image）
+- POST `/sfm/ie-class/attendance/student/record/deleteRegist.php` — **打刻の削除**
+  - `sid`, `adt`, `smt_deleteRegist`
 
 ### カード管理（用途頻度 低、tool 未実装）
 - GET `/sfm/ie-class/management/card/spot/setStudent.php` — 外部生カード割当画面
