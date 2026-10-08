@@ -3195,6 +3195,15 @@ def _iev120_load(s: requests.Session) -> tuple[dict | None, list[dict]]:
         m_dt = re.search(r"name='dtcount'\s+value='(\d+)'", r2.text)
         if m_dt:
             meta["dtcount"] = m_dt.group(1)
+    # showcount / hidecount / seikyusum は画面では ajax 応答末尾の JS が埋める値。
+    # 空のまま regist すると 0 件扱いで何も確定されない（2026-10-09 実測）ので JS から拾う。
+    for key in ("showcount", "hidecount", "seikyusum"):
+        m_v = re.search(r"getElementById\('" + key + r"'\)\.value\s*=\s*(?:yen\()?'([^']*)'", r2.text)
+        if m_v:
+            v = m_v.group(1)
+            if key == "seikyusum" and v.isdigit():
+                v = f"{int(v):,}"
+            meta[key] = v
     return meta, rows
 
 
