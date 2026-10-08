@@ -2120,6 +2120,10 @@ def sks_internal_update_fields(seitocd: str, fields: dict) -> str:
         data["nyujukudt"] = data["imnyujukudt"].replace("/", "")
     if data.get("imdatebirth"):
         data["datebirth"] = data["imdatebirth"].replace("/", "")
+    # 引落開始年月: GUI の dopost は imwnstym(YYYY/MM) を hidden wnstym(YYYYMM) に写して送る。
+    # 写さずに送ると wnstym="" で DB の引落開始年月が消える（2026-10-09 小須田 260026 で発生・復旧済み）。
+    if data.get("imwnstym") and not data.get("wnstym"):
+        data["wnstym"] = data["imwnstym"].replace("/", "")[:6]
 
     # entprice (入会金) が空だと Oracle UPDATE TBFNYUKAIKINJOHO SET NYUKAIKIN=, ...
     # で ORA-00936 (式がありません) → E00002。JS プレースホルダ getEntprice() が
@@ -2777,6 +2781,10 @@ def sks_convert_gaibu_to_internal(
         data["nyujukudt"] = data["imnyujukudt"].replace("/", "")
     if data.get("imdatebirth"):
         data["datebirth"] = data["imdatebirth"].replace("/", "")
+    # 引落開始年月: GUI の dopost は imwnstym(YYYY/MM) を hidden wnstym(YYYYMM) に写して送る。
+    # 写さずに送ると wnstym="" で DB の引落開始年月が消える（2026-10-09 小須田 260026 で発生・復旧済み）。
+    if data.get("imwnstym") and not data.get("wnstym"):
+        data["wnstym"] = data["imwnstym"].replace("/", "")[:6]
 
     # entprice (入会金) が空だと Oracle UPDATE TBFNYUKAIKINJOHO SET NYUKAIKIN=, ...
     # で ORA-00936 (式がありません) → E00002。JS プレースホルダ getEntprice() が
@@ -2987,6 +2995,10 @@ def sks_naibusei_register_from_inquiry(
         data["nyujukudt"] = data["imnyujukudt"].replace("/", "")
     if data.get("imdatebirth"):
         data["datebirth"] = data["imdatebirth"].replace("/", "")
+    # 引落開始年月: GUI の dopost は imwnstym(YYYY/MM) を hidden wnstym(YYYYMM) に写して送る。
+    # 写さずに送ると wnstym="" で DB の引落開始年月が消える（2026-10-09 小須田 260026 で発生・復旧済み）。
+    if data.get("imwnstym") and not data.get("wnstym"):
+        data["wnstym"] = data["imwnstym"].replace("/", "")[:6]
 
     # entprice (入会金) が空だと Oracle UPDATE TBFNYUKAIKINJOHO SET NYUKAIKIN=, ...
     # で ORA-00936 (式がありません) → E00002。JS プレースホルダ getEntprice() が
