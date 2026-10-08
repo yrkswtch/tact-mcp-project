@@ -140,11 +140,30 @@ async def delete_student(seitocd: str, name_hint: str = '') -> dict:
         r = await s.call('Runtime.evaluate', {'expression': 'location.href', 'returnByValue': True})
         href = r.get('result', {}).get('result', {}).get('value', '')
 
+        # 起動直後は about:blank / 読込中のことがある → ログイン画面 or 遷移完了まで待つ
+        for _ in range(30):
+            r = await s.call('Runtime.evaluate', {'expression': 'location.href', 'returnByValue': True})
+            href = r.get('result', {}).get('result', {}).get('value', '')
+            if href.startswith('https://gdls.gakken.jp'):
+                break
+            await asyncio.sleep(0.5)
+
         # ログイン
         if '/login' in href or 'g-method/login' in href:
-            r = await s.call('Runtime.evaluate', {
-                'expression': "(function(){var i=document.querySelector('input'); if(!i) return{no:true}; i.focus(); return{ok:true}})()",
-                'returnByValue': True})
+            if not KIMISTA_CODE:
+                return {'ok': False, 'error': 'GDLS_LOGIN_CODE 未設定（~/.tact-mcp/sks.env）'}
+            # 入力欄が描画されるまで待つ（Vue描画前に insertText すると空振りしてログインされない）
+            focused = False
+            for _ in range(30):
+                r = await s.call('Runtime.evaluate', {
+                    'expression': "(function(){var i=document.querySelector('input'); if(!i) return{no:true}; i.focus(); return{ok:document.activeElement===i}})()",
+                    'returnByValue': True})
+                if r.get('result', {}).get('result', {}).get('value', {}).get('ok'):
+                    focused = True
+                    break
+                await asyncio.sleep(0.5)
+            if not focused:
+                return {'ok': False, 'error': 'login input not found'}
             # insertText
             await s.call('Input.insertText', {'text': KIMISTA_CODE})
             await asyncio.sleep(0.3)
@@ -157,11 +176,18 @@ async def delete_student(seitocd: str, name_hint: str = '') -> dict:
                 await s.call('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': v['x'], 'y': v['y'], 'button': 'left', 'clickCount': 1})
                 await s.call('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': v['x'], 'y': v['y'], 'button': 'left', 'clickCount': 1})
             # 遷移待ち
+            logged_in = False
             for _ in range(20):
                 await asyncio.sleep(0.5)
                 r = await s.call('Runtime.evaluate', {'expression': 'location.href', 'returnByValue': True})
                 if '/login' not in r.get('result', {}).get('result', {}).get('value', ''):
+                    logged_in = True
                     break
+            if not logged_in:
+                # ログイン失敗時はリトライしない（アカウントロック防止・work_rules ログイン安全）
+                r = await s.call('Runtime.evaluate', {'expression': 'document.body.innerText.slice(0,300)', 'returnByValue': True})
+                return {'ok': False, 'error': 'login failed (no retry)',
+                        'page_text': r.get('result', {}).get('result', {}).get('value', '')}
 
         # 生徒管理 に 遷移 (name 検索)
         query = urllib.parse.quote(name_hint or seitocd)
